@@ -437,10 +437,11 @@ async function carregarPerfil(){
   const {data:{session}} = await sb.auth.getSession(); sessao = session;
   if(!session){ return false; }
   ME.id = session.user.id;
-  const {data:ps} = await sb.from('perfis').select('user_id,nome,perfil').order('nome');
+  const {data:ps} = await sb.from('perfis').select('user_id,nome,perfil,aprovado').order('nome');
   PERFIS = ps || [];
   const eu = PERFIS.find(p => p.user_id === ME.id);
-  ME.admin = !!eu && eu.perfil === 'admin';
+  ME.admin = !!eu && eu.perfil === 'admin' && eu.aprovado;
+  ME.aprovado = !!eu && eu.aprovado;
   lsSet('nome', eu?.nome || session.user.email); lsSet('perfil', eu?.perfil || 'profissional');
   return true;
 }
@@ -520,7 +521,7 @@ function render(){
   if(SH && SH.live && !focoEm('#sheet')) renderSheet();
 }
 function renderTabs(){
-  if(!db || !API()){ $('#tabs').innerHTML = ''; return; }
+  if(!db || !API() || ME.aprovado === false){ $('#tabs').innerHTML = ''; return; }
   const n = S.ready ? filaMsgs().total : 0;
   const tabs = [['agenda','Agenda',ICON.agenda],['msgs','Mensagens',ICON.msg],['clientes','Clientes',ICON.cli],['fin','Financeiro',ICON.fin],['mais','Mais',ICON.mais]];
   $('#tabs').innerHTML = tabs.map(([k,l,i]) => `<button class="tab" data-a="tab" data-v="${k}" ${U.view===k?'aria-current="page"':''}>${i}<span>${l}</span>${k==='msgs'&&n?`<span class="badge num">${n}</span>`:''}</button>`).join('');
@@ -534,20 +535,31 @@ function renderHeader(){
 }
 function renderView(){
   if(API() && !db) return telaLogin();
+  if(db && ME.aprovado === false) return telaAguardando();
   if(!API()) return telaConfig();
   if(!S.ready) return `<div class="empty"><b>Abrindo a agenda</b>Buscando atendimentos, clientes e pacotes.</div>`;
   if(!API()) return telaConfig();
   if(!db) return telaLogin();
+  if(ME.aprovado === false) return telaAguardando();
   if(!ME.admin && !ME.profId) return viewQuemSou();
   const ban = canWrite ? '' : `<div class="banner">Sua conta pode ver a agenda, mas não alterar. Peça acesso de colaboradora a quem administra.</div>`;
   return ban + ({agenda:viewAgenda, msgs:viewMsgs, clientes:viewClientes, fin:viewFin, mais:viewMais}[U.view])();
 }
 
+let modoLogin = 'entrar';
 function telaLogin(){
-  return `<form class="login" id="fLogin"><h2>Entrar</h2><p class="muted" style="margin:0">Use o e-mail e a senha que a administração cadastrou para você.</p>
+  const criar = modoLogin === 'criar';
+  return `<form class="login" id="fLogin"><h2>${criar ? 'Criar meu acesso' : 'Entrar'}</h2>
+  <p class="muted" style="margin:0">${criar ? 'Depois de criar, a administração libera o seu acesso. O primeiro acesso criado vira a administração.' : 'Use seu e-mail e sua senha.'}</p>
+  ${criar ? '<div class="fld"><label for="lg-nome">Seu nome</label><input class="inp" id="lg-nome" autocomplete="name" required></div>' : ''}
   <div class="fld"><label for="lg-email">E-mail</label><input class="inp" id="lg-email" type="email" autocomplete="username" inputmode="email" required></div>
-  <div class="fld"><label for="lg-senha">Senha</label><input class="inp" id="lg-senha" type="password" autocomplete="current-password" required></div>
-  <button class="btn pri wide" type="submit" id="lg-btn">Entrar</button><div class="small muted" id="lg-msg"></div></form>`;
+  <div class="fld"><label for="lg-senha">Senha${criar ? ' (mínimo 6 caracteres)' : ''}</label><input class="inp" id="lg-senha" type="password" autocomplete="${criar ? 'new-password' : 'current-password'}" minlength="6" required></div>
+  <button class="btn pri wide" type="submit" id="lg-btn">${criar ? 'Criar acesso' : 'Entrar'}</button><div class="small muted" id="lg-msg"></div>
+  <button type="button" class="btn ghost wide" data-a="modoLogin" data-v="${criar ? 'entrar' : 'criar'}">${criar ? 'Já tenho acesso: entrar' : 'Ainda não tenho acesso: criar'}</button></form>`;
+}
+function telaAguardando(){
+  return `<div class="login"><h2>Aguardando liberação</h2><p class="muted" style="margin:0">Seu acesso foi criado. Peça para a administração abrir <b>Mais → Equipe e acessos</b> e tocar em <b>Liberar</b> no seu nome.</p>
+  <button class="btn pri wide" data-a="atualizar">Já liberaram: atualizar</button><button class="btn ghost wide" data-a="sair">Sair</button></div>`;
 }
 function telaConfig(){
   return `<div class="login" style="max-width:560px"><h2>Quase pronto</h2><p class="muted" style="margin:0">O app ainda não foi ligado ao banco de dados. Falta colocar o endereço e a chave do Supabase no arquivo config.js.</p></div>`;
@@ -825,10 +837,14 @@ function maisMsgs(){
   <div class="row"><button class="btn pri grow" data-a="salvarMsgs">Salvar textos</button><button class="btn" data-a="restaurarMsgs">Restaurar padrão</button></div></div>`;
 }
 function maisEquipe(){
-  const ps = PERFIS;
+  const ps = PERFIS, pend = ps.filter(p => !p.aprovado), ok = ps.filter(p => p.aprovado);
+  const linha = p => `<div class="li" style="cursor:default"><span class="grow"><span class="t">${esc(p.nome)}</span>${p.user_id===ME.id?' <span class="pill">você</span>':''}<br><span class="s">${!p.aprovado?'Aguardando liberação':(p.perfil==='admin'?'Administração':'Profissional')}</span></span>
+    ${p.user_id===ME.id ? '' : (!p.aprovado ? `<button class="btn sm pri" data-a="liberar" data-id="${p.user_id}" data-v="1">Liberar</button>` : `<span class="row" style="gap:6px;justify-content:flex-end"><button class="btn sm" data-a="mudarPerfil" data-id="${p.user_id}" data-v="${p.perfil==='admin'?'profissional':'admin'}">${p.perfil==='admin'?'Tornar profissional':'Tornar administração'}</button><button class="btn sm ghost" data-a="liberar" data-id="${p.user_id}" data-v="0">Bloquear</button></span>`)}</div>`;
   return voltarMais('Equipe e acessos') + `<div class="stack">
-  <div class="card small"><b>Como dar acesso a alguém</b><ol style="margin:6px 0 0;padding-left:20px;color:var(--muted)"><li>No painel do Supabase, abra <b>Authentication → Users</b></li><li>Toque em <b>Add user → Create new user</b></li><li>Coloque o e-mail e uma senha, deixe <b>Auto Confirm User</b> ligado e salve</li><li>Passe o e-mail e a senha para a pessoa. Ela aparece aqui como profissional</li></ol></div>
-  ${ps.length ? `<div class="list">${ps.map(p => `<div class="li" style="cursor:default"><span class="grow"><span class="t">${esc(p.nome)}</span>${p.user_id===ME.id?' <span class="pill">você</span>':''}<br><span class="s">${p.perfil==='admin'?'Administração':'Profissional'}</span></span>${p.user_id!==ME.id?`<button class="btn sm" data-a="mudarPerfil" data-id="${p.user_id}" data-v="${p.perfil==='admin'?'profissional':'admin'}">${p.perfil==='admin'?'Tornar profissional':'Tornar administração'}</button>`:''}</div>`).join('')}</div>` : '<div class="empty">Nenhum login ainda.</div>'}
+  <div class="card small"><b>Como dar acesso a alguém</b><ol style="margin:6px 0 0;padding-left:20px;color:var(--muted)"><li>Mande o endereço do app para a pessoa</li><li>Ela toca em <b>Ainda não tenho acesso: criar</b>, preenche nome, e-mail e senha e confirma o e-mail que chegar</li><li>Ela aparece aqui como <b>aguardando</b>. Toque em <b>Liberar</b></li></ol></div>
+  ${pend.length ? `<div class="sec-title" style="margin:6px 0 0">Aguardando liberação<span class="count num">${pend.length}</span></div><div class="list">${pend.map(linha).join('')}</div>` : ''}
+  <div class="sec-title" style="margin:6px 0 0">Com acesso<span class="count num">${ok.length}</span></div>
+  ${ok.length ? `<div class="list">${ok.map(linha).join('')}</div>` : '<div class="empty">Ninguém ainda.</div>'}
   </div>`;
 }
 function maisDados(){
@@ -1136,8 +1152,10 @@ document.addEventListener('click', async e => {
     case 'tab': U.view = d.v; U.mais = null; U.laserDia = null; if(d.v !== 'clientes') U.cliId = null; SH_conf=''; render(); window.scrollTo(0,0); break;
     case 'close': closeSheet(); break;
     case 'sair': sair('Você saiu.'); break;
+    case 'modoLogin': modoLogin = d.v; render(); break;
+    case 'liberar': { const {error} = await sb.from('perfis').update({aprovado:d.v === '1'}).eq('user_id', d.id); if(error) toast('Não foi possível alterar o acesso.'); else { toast(d.v === '1' ? 'Acesso liberado.' : 'Acesso bloqueado.'); await carregarPerfil(); render(); } break; }
     case 'mudarPerfil': { const {error} = await sb.from('perfis').update({perfil:d.v}).eq('user_id', d.id); if(error) toast('Não foi possível mudar o perfil.'); else { toast('Perfil alterado.'); await carregarPerfil(); render(); } break; }
-    case 'atualizar': toast('Atualizando…'); await enviarFila(); await carregar(); toast(statusSync || 'Atualizado.'); break;
+    case 'atualizar': toast('Atualizando…'); if(ME.aprovado === false){ await carregarPerfil(); render(); if(ME.aprovado){ ouvirMudancas(); carregar(); } else toast('Ainda não liberado.'); break; } await enviarFila(); await carregar(); toast(statusSync || 'Atualizado.'); break;
     case 'dnav': U.date = addDays(U.date, (U.mode==='dia'?1:7) * Number(d.n)); render(); break;
     case 'dhoje': U.date = today(); render(); break;
     case 'mode': U.mode = d.v; render(); break;
@@ -1319,9 +1337,16 @@ document.addEventListener('submit', async e => {
   const email = $('#lg-email').value.trim(), senha = $('#lg-senha').value;
   const b = $('#lg-btn'), m = $('#lg-msg'); b.disabled = true; m.textContent = 'Conferindo…';
   try{
-    const {error} = await sb.auth.signInWithPassword({email, password:senha});
-    if(error){ m.textContent = /invalid/i.test(error.message) ? 'E-mail ou senha incorretos.' : 'Não foi possível entrar: ' + error.message; b.disabled = false; return; }
-    db = true; canWrite = true; await carregarPerfil(); render(); ouvirMudancas(); carregar();
+    if(modoLogin === 'criar'){
+      const nome = $('#lg-nome').value.trim();
+      const {data, error} = await sb.auth.signUp({email, password:senha, options:{data:{nome}, emailRedirectTo:location.origin + location.pathname}});
+      if(error){ m.textContent = /registered|exists/i.test(error.message) ? 'Esse e-mail já tem acesso. Toque em "entrar".' : 'Não foi possível criar: ' + error.message; b.disabled = false; return; }
+      if(!data.session){ modoLogin = 'entrar'; render(); toast('Enviamos um e-mail de confirmação. Confirme e depois entre aqui.'); return; }
+    } else {
+      const {error} = await sb.auth.signInWithPassword({email, password:senha});
+      if(error){ m.textContent = /confirm/i.test(error.message) ? 'Confirme seu e-mail antes de entrar (veja a caixa de entrada e o spam).' : (/invalid/i.test(error.message) ? 'E-mail ou senha incorretos.' : 'Não foi possível entrar: ' + error.message); b.disabled = false; return; }
+    }
+    db = true; canWrite = true; await carregarPerfil(); render(); if(ME.aprovado){ ouvirMudancas(); carregar(); }
   }catch(_){ m.textContent = 'Não consegui falar com o banco de dados. Confira a internet e tente de novo.'; b.disabled = false; }
 });
 document.addEventListener('input', e => {
@@ -1357,7 +1382,7 @@ async function boot(){
     db = true; ME.id = session.user.id; ME.admin = lsGet('perfil') === 'admin';
     const cache = lsJSON('cache');
     if(cache){ SERVER = cache; S.ready = true; recalcular(); statusSync = 'Mostrando a cópia salva no aparelho. Atualizando…'; }
-    render(); ouvirMudancas(); carregar(); enviarFila();
+    render(); await carregarPerfil(); render(); if(ME.aprovado){ ouvirMudancas(); carregar(); enviarFila(); }
   } else render();
   sb.auth.onAuthStateChange((ev) => { if(ev === 'SIGNED_OUT' && db){ db = null; S.ready = false; render(); } });
   setInterval(() => { if(document.visibilityState === 'visible' && db){ enviarFila(); carregar(); } }, 60000);

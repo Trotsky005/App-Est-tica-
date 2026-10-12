@@ -6,8 +6,10 @@ create table if not exists public.perfis (
   user_id uuid primary key references auth.users(id) on delete cascade,
   nome text not null default '',
   perfil text not null default 'profissional' check (perfil in ('admin','profissional')),
+  aprovado boolean not null default false,
   criado_em timestamptz not null default now()
 );
+alter table public.perfis add column if not exists aprovado boolean not null default false;
 
 -- 2) Todos os registros do app (agenda, clientes, pacotes, etc.)
 create table if not exists public.registros (
@@ -24,19 +26,23 @@ create index if not exists registros_token_idx on public.registros (token) where
 -- 3) Quem é administração?
 create or replace function public.eh_admin() returns boolean
 language sql stable security definer set search_path = public as $$
-  select exists (select 1 from public.perfis where user_id = auth.uid() and perfil = 'admin');
+  select exists (select 1 from public.perfis where user_id = auth.uid() and perfil = 'admin' and aprovado);
+$$;
+-- Quem tem acesso liberado?
+create or replace function public.eh_equipe() returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.perfis where user_id = auth.uid() and aprovado);
 $$;
 
--- 4) Ao criar um login, cria o perfil. O primeiro login vira administração.
+-- 4) Ao criar um login, cria o perfil aguardando liberação. O primeiro login vira administração já liberada.
 create or replace function public.novo_usuario() returns trigger
 language plpgsql security definer set search_path = public as $$
+declare primeiro boolean;
 begin
-  insert into public.perfis (user_id, nome, perfil)
-  values (
-    new.id,
-    coalesce(nullif(new.raw_user_meta_data->>'nome',''), split_part(new.email,'@',1)),
-    case when exists (select 1 from public.perfis where perfil = 'admin') then 'profissional' else 'admin' end
-  )
+  primeiro := not exists (select 1 from public.perfis where perfil = 'admin' and aprovado);
+  insert into public.perfis (user_id, nome, perfil, aprovado)
+  values (new.id, coalesce(nullif(new.raw_user_meta_data->>'nome',''), split_part(new.email,'@',1)),
+          case when primeiro then 'admin' else 'profissional' end, primeiro)
   on conflict (user_id) do nothing;
   return new;
 end $$;
@@ -44,36 +50,28 @@ drop trigger if exists ao_criar_usuario on auth.users;
 create trigger ao_criar_usuario after insert on auth.users
   for each row execute function public.novo_usuario();
 
--- Logins que já existiam antes deste script também ganham perfil
-insert into public.perfis (user_id, nome, perfil)
-select u.id, split_part(u.email,'@',1),
-  case when not exists (select 1 from public.perfis where perfil='admin')
-        and u.id = (select id from auth.users order by created_at limit 1) then 'admin' else 'profissional' end
-from auth.users u
-on conflict (user_id) do nothing;
-
 -- 5) Segurança: só quem está logado vê os dados
 alter table public.perfis enable row level security;
 alter table public.registros enable row level security;
 
 drop policy if exists "equipe le perfis" on public.perfis;
-create policy "equipe le perfis" on public.perfis for select to authenticated using (true);
+create policy "equipe le perfis" on public.perfis for select to authenticated using (user_id = auth.uid() or public.eh_equipe());
 drop policy if exists "admin altera perfis" on public.perfis;
 create policy "admin altera perfis" on public.perfis for update to authenticated using (public.eh_admin()) with check (public.eh_admin());
 drop policy if exists "cada um muda o proprio nome" on public.perfis;
 
 drop policy if exists "equipe le registros" on public.registros;
-create policy "equipe le registros" on public.registros for select to authenticated using (true);
+create policy "equipe le registros" on public.registros for select to authenticated using (public.eh_equipe());
 drop policy if exists "equipe grava registros" on public.registros;
 create policy "equipe grava registros" on public.registros for insert to authenticated
-  with check (colecao not in ('config','saidas','servicos','modelosPacote') or public.eh_admin());
+  with check (public.eh_equipe() and (colecao not in ('config','saidas','servicos','modelosPacote') or public.eh_admin()));
 drop policy if exists "equipe altera registros" on public.registros;
 create policy "equipe altera registros" on public.registros for update to authenticated
-  using (colecao not in ('config','saidas','servicos','modelosPacote') or public.eh_admin())
-  with check (colecao not in ('config','saidas','servicos','modelosPacote') or public.eh_admin());
+  using (public.eh_equipe() and (colecao not in ('config','saidas','servicos','modelosPacote') or public.eh_admin()))
+  with check (public.eh_equipe() and (colecao not in ('config','saidas','servicos','modelosPacote') or public.eh_admin()));
 drop policy if exists "equipe apaga registros" on public.registros;
 create policy "equipe apaga registros" on public.registros for delete to authenticated
-  using (colecao not in ('config','saidas','servicos','modelosPacote') or public.eh_admin());
+  using (public.eh_equipe() and (colecao not in ('config','saidas','servicos','modelosPacote') or public.eh_admin()));
 
 -- 6) Link público da cliente: mostra só aquele horário, pelo código aleatório
 create or replace function public.evento_publico(t text) returns jsonb
@@ -103,7 +101,9 @@ grant execute on function public.evento_publico(text) to anon, authenticated;
 
 revoke all on function public.novo_usuario() from public, anon, authenticated;
 revoke all on function public.eh_admin() from public, anon;
+revoke all on function public.eh_equipe() from public, anon;
 grant execute on function public.eh_admin() to authenticated;
+grant execute on function public.eh_equipe() to authenticated;
 
 -- 7) Atualização ao vivo entre aparelhos
 do $$ begin
