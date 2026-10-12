@@ -185,6 +185,12 @@ textarea.inp{min-height:84px;resize:vertical}
 .colors{display:flex;gap:8px;flex-wrap:wrap}
 .colors button{width:34px;height:34px;border-radius:50%;border:3px solid transparent;background:var(--c);cursor:pointer}
 .colors button[aria-pressed="true"]{border-color:var(--fg)}
+.hdias{display:flex;flex-direction:column;gap:6px}
+.hdia{display:grid;grid-template-columns:76px 1fr 1fr;gap:8px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:11px;padding:6px 8px}
+.hdia label.d{display:flex;align-items:center;gap:6px;font-weight:700;font-size:14px}
+.hdia input[type=checkbox]{width:20px;height:20px;accent-color:var(--accent)}
+.hdia input[type=time]{min-height:38px;padding:6px 8px}
+.hdia .fech{grid-column:2 / 4;color:var(--muted);font-size:13px}
 .switch{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;background:var(--surface);border:1px solid var(--line);border-radius:11px}
 .switch input{width:22px;height:22px;accent-color:var(--accent)}
 .banner{background:var(--warn-soft);color:var(--warn);border-radius:12px;padding:10px 12px;font-size:13.5px;font-weight:600;margin-bottom:12px}
@@ -294,15 +300,26 @@ const effProf = () => ME.admin ? U.prof : (ME.profId || 'nenhuma');
 const inProf = pid => { const e = effProf(); return e === 'todas' || e === pid; };
 
 /* ---------- regras de negócio ---------- */
+// horário de cada dia da semana (0 = domingo); aceita o formato antigo (dias + início/fim)
+function horariosDe(src){
+  const c = C(); src = src || c;
+  if(src.horarios) return src.horarios;
+  const o = {}; const dias = src.dias || c.dias || DEF.dias;
+  for(let i = 0; i < 7; i++) o[i] = {aberto:dias.includes(i), inicio:src.inicio || c.inicio || DEF.inicio, fim:src.fim || c.fim || DEF.fim};
+  return o;
+}
+const especialEm = date => (C().especiais || []).find(e => e.data === date);
 function horario(p, date){
   const c = C(); const h = p && p.horarioProprio ? p : c;
-  const dias = h.dias || c.dias;
-  if(!dias.includes(wd(date))) return null;
-  return {ini:toMin(h.inicio || c.inicio), fim:toMin(h.fim || c.fim), almIni:toMin(h.almocoIni), almFim:toMin(h.almocoFim)};
+  const esp = especialEm(date);
+  let ini, fim;
+  if(esp){ if(esp.fechado) return null; ini = esp.inicio; fim = esp.fim; }
+  else { const d = horariosDe(h)[wd(date)]; if(!d || !d.aberto) return null; ini = d.inicio; fim = d.fim; }
+  return {ini:toMin(ini), fim:toMin(fim), almIni:toMin(h.almocoIni), almFim:toMin(h.almocoFim)};
 }
 const cobre = (b, d) => d >= b.data && d <= (b.ate || b.data);
 const bloqsDe = (pid, d) => S.bloqs.filter(b => cobre(b,d) && (!b.profId || b.profId === pid));
-function diaAberto(d){ return C().dias.includes(wd(d)) && !S.bloqs.some(b => !b.profId && !b.ini && cobre(b,d)); }
+function diaAberto(d){ return !!horario(null, d) && !S.bloqs.some(b => !b.profId && !b.ini && cobre(b,d)); }
 function proxDiaAberto(t){ for(let i=1;i<=30;i++){ const d = addDays(t,i); if(diaAberto(d)) return d; } return addDays(t,1); }
 const ativoNaAgenda = a => a.status !== 'cancelado';
 const totalAvulso = a => (a.itens||[]).filter(i => !i.pacoteId).reduce((s,i) => s + (Number(i.preco)||0), 0);
@@ -811,20 +828,39 @@ function maisModelos(){
   const l = [...S.modelos].sort((a,b) => (a.nome||'').localeCompare(b.nome||''));
   return voltarMais('Catálogo de pacotes') + `<p class="muted small" style="margin:-4px 0 12px">Modelos salvos. Ao vender um pacote para uma cliente, escolha o modelo e os dados vêm preenchidos.</p><button class="btn pri wide" data-a="formModelo">${ICON.plus}Novo modelo</button>` + (l.length ? `<div class="list" style="margin-top:12px">${l.map(m => `<button class="li" data-a="formModelo" data-id="${m.id}"><span class="grow"><span class="t">${esc(m.nome)}</span><br><span class="s num">${m.sessoes} sessões · a cada ${m.intervaloDias} dias · ${brl(m.valor)}</span></span><span class="chev">${ICON.chev}</span></button>`).join('')}</div>` : `<div class="empty" style="margin-top:12px">Nenhum modelo ainda.</div>`);
 }
+const ORDEM_DIAS = [1,2,3,4,5,6,0];
+function editorHorarios(px, hs){
+  return `<div class="hdias" id="${px}-box">${ORDEM_DIAS.map(i => { const h = hs[i] || {aberto:false, inicio:'09:00', fim:'18:00'}; return `<div class="hdia"><label class="d"><input type="checkbox" id="${px}-a-${i}" data-a="hAberto" data-px="${px}" data-i="${i}" ${h.aberto?'checked':''}>${DW[i]}</label>
+    <input class="inp" type="time" id="${px}-i-${i}" value="${esc(h.inicio||'09:00')}" ${h.aberto?'':'hidden'} aria-label="${DWL[i]}: abre às"><input class="inp" type="time" id="${px}-f-${i}" value="${esc(h.fim||'18:00')}" ${h.aberto?'':'hidden'} aria-label="${DWL[i]}: fecha às">
+    <span class="fech" id="${px}-x-${i}" ${h.aberto?'hidden':''}>Fechado</span></div>`; }).join('')}</div>`;
+}
+function lerHorarios(px){
+  const o = {}; let algum = false;
+  for(let i = 0; i < 7; i++){
+    const a = $(`#${px}-a-${i}`).checked, ini = $(`#${px}-i-${i}`).value, fim = $(`#${px}-f-${i}`).value;
+    if(a){ if(!ini || !fim || toMin(fim) <= toMin(ini)) return {erro:`Confira o horário de ${DWL[i].toLowerCase()}: o fechamento precisa ser depois da abertura.`}; algum = true; }
+    o[i] = {aberto:a, inicio:ini || '09:00', fim:fim || '18:00'};
+  }
+  if(!algum) return {erro:'Marque pelo menos um dia de atendimento.'};
+  return {horarios:o};
+}
 function diasChips(id, dias){ return `<div class="chips wrap" id="${id}">${DW.map((d,i) => `<button type="button" class="chip" data-a="toggleDia" data-i="${i}" aria-pressed="${dias.includes(i)}">${d}</button>`).join('')}</div>`; }
 function maisConfig(){
   const c = C(); const bl = S.bloqs.filter(b => (b.ate||b.data) >= today()).sort((a,b) => a.data.localeCompare(b.data));
   return voltarMais('Horários e regras') + `<div class="stack">
   <div class="fld"><label for="c-nome">Nome do espaço</label><input class="inp" id="c-nome" value="${esc(c.nomeEspaco)}"></div>
   <div class="fld"><label for="c-end">Endereço (aparece na agenda da cliente)</label><input class="inp" id="c-end" value="${esc(c.endereco||'')}" placeholder="Rua, número, bairro, cidade"></div>
-  <div class="fld"><span class="lb">Dias de atendimento</span>${diasChips('c-dias', U._cfgDias || c.dias)}</div>
-  <div class="grid2"><div class="fld"><label for="c-ini">Abre às</label><input class="inp" type="time" id="c-ini" value="${c.inicio}"></div><div class="fld"><label for="c-fim">Fecha às</label><input class="inp" type="time" id="c-fim" value="${c.fim}"></div></div>
+  <div class="fld"><span class="lb">Horário de cada dia</span><span class="small muted">Marque os dias abertos e o horário de cada um. Ex.: sábado das 08:00 às 12:00.</span>${editorHorarios('c', horariosDe(c))}</div>
   <div class="grid2"><div class="fld"><label for="c-ai">Almoço de</label><input class="inp" type="time" id="c-ai" value="${c.almocoIni||''}"></div><div class="fld"><label for="c-af">até</label><input class="inp" type="time" id="c-af" value="${c.almocoFim||''}"></div></div>
   <div class="fld"><label for="c-int">Intervalo entre atendimentos (min)</label><input class="inp" type="number" min="0" step="5" id="c-int" value="${c.intervalo}"></div>
   <div class="sec-title" style="margin:8px 0 0">Regras de pacote</div>
   <label class="switch"><span>Falta desconta a sessão do pacote</span><input type="checkbox" id="c-falta" ${c.faltaDesconta?'checked':''}></label>
   <div class="fld"><label for="c-prazo">Cancelamento sem descontar sessão: com pelo menos (horas de antecedência)</label><input class="inp" type="number" min="0" id="c-prazo" value="${c.cancelPrazoH}"></div>
   <button class="btn pri wide" data-a="salvarCfg">Salvar horários e regras</button>
+  <div class="sec-title" style="margin:14px 0 0">Datas especiais</div>
+  <p class="small muted" style="margin:-4px 0 0">Um dia com horário diferente do normal, ou fechado. Ex.: véspera de Natal até as 13:00.</p>
+  <button class="btn wide" data-a="formEsp">${ICON.plus}Adicionar data especial</button>
+  ${(() => { const l = (c.especiais||[]).filter(e => e.data >= today()).sort((a,b) => a.data.localeCompare(b.data)); return l.length ? `<div class="list">${l.map(e => `<div class="li" style="cursor:default"><span class="grow"><span class="t">${esc(fmtDia(e.data))}${e.motivo?' · '+esc(e.motivo):''}</span><br><span class="s num">${e.fechado?'Fechado':`Das ${esc(e.inicio)} às ${esc(e.fim)}`}</span></span><button class="btn sm ghost" data-a="delEsp" data-v="${e.data}">Remover</button></div>`).join('')}</div>` : '<div class="empty">Nenhuma data especial.</div>'; })()}
   <div class="sec-title" style="margin:14px 0 0">Folgas, feriados e férias</div>
   <button class="btn wide" data-a="formBloq">${ICON.plus}Bloquear dia ou período</button>
   ${bl.length?`<div class="list">${bl.map(b => `<div class="li" style="cursor:default"><span class="grow"><span class="t">${esc(b.motivo||'Bloqueio')}</span><br><span class="s num">${fmtCurto(b.data)}${b.ate&&b.ate!==b.data?' a '+fmtCurto(b.ate):''} · ${b.ini?`${b.ini}–${b.fim}`:'dia inteiro'} · ${b.profId?esc(prof(b.profId)?.nome||''):'todas'}</span></span><button class="btn sm ghost" data-a="delBloq" data-id="${b.id}">Remover</button></div>`).join('')}</div>`:'<div class="empty">Nenhum bloqueio futuro.</div>'}
@@ -860,7 +896,7 @@ function openSheet(state){ SH = state; renderSheet(); $('#sheetWrap').hidden = f
 function closeSheet(){ SH = null; F = null; $('#sheetWrap').hidden = true; document.body.style.overflow = ''; if(dirty) render(); }
 function renderSheet(){
   if(!SH) return;
-  const fn = {at:sheetAt, atForm:sheetAtForm, cliForm:sheetCliForm, pacForm:sheetPacForm, parc:sheetParc, serv:sheetServ, prof:sheetProf, modelo:sheetModelo, bloq:sheetBloq, remarcado:sheetRemarcado, saida:sheetSaida, dia:sheetDia}[SH.type];
+  const fn = {at:sheetAt, atForm:sheetAtForm, cliForm:sheetCliForm, pacForm:sheetPacForm, parc:sheetParc, serv:sheetServ, prof:sheetProf, modelo:sheetModelo, bloq:sheetBloq, esp:sheetEsp, remarcado:sheetRemarcado, saida:sheetSaida, dia:sheetDia}[SH.type];
   $('#sheet').innerHTML = fn ? fn() : '';
 }
 const head = (t, sub) => `<div class="sh-head"><div class="grow"><h2>${t}</h2>${sub?`<div class="small muted" style="margin-top:2px">${sub}</div>`:''}</div><button class="iconbtn" data-a="close" aria-label="Fechar">${ICON.x}</button></div>`;
@@ -1027,7 +1063,7 @@ function sheetCliForm(){
   return head(SH.id ? 'Editar cliente' : 'Nova cliente') + `<div class="stack">
   <div class="fld"><label for="cf-nome">Nome</label><input class="inp" id="cf-nome" value="${esc(c.nome||'')}" autocomplete="off"></div>
   <div class="fld"><label for="cf-tel">WhatsApp com DDD</label><input class="inp" id="cf-tel" inputmode="tel" value="${esc(c.whatsapp||'')}" placeholder="(11) 98888-7777"></div>
-  <div class="fld"><label for="cf-aniv">Aniversário (dia e mês)</label><input class="inp" id="cf-aniv" placeholder="dd/mm" inputmode="numeric" value="${c.aniversario?esc(c.aniversario.slice(-5).split('-').reverse().join('/')):''}"></div>
+  ${(() => { const am = c.aniversario ? c.aniversario.slice(-5, -3) : '', ad = c.aniversario ? c.aniversario.slice(-2) : ''; return `<div class="fld"><span class="lb">Aniversário</span><div class="grid2"><select class="inp" id="cf-adia" aria-label="Dia do aniversário"><option value="">Dia</option>${Array.from({length:31}, (_,i) => pad(i+1)).map(x => `<option value="${x}" ${ad===x?'selected':''}>${Number(x)}</option>`).join('')}</select><select class="inp" id="cf-ames" aria-label="Mês do aniversário"><option value="">Mês</option>${MESL.map((n,i) => `<option value="${pad(i+1)}" ${am===pad(i+1)?'selected':''}>${n}</option>`).join('')}</select></div></div>`; })()}
   <div class="fld"><label for="cf-notas">Anotações</label><textarea class="inp" id="cf-notas" placeholder="Alergias, preferências de esmalte, cuidados">${esc(c.notas||'')}</textarea></div>
   ${SH.id&&ME.admin?(SH.panel==='excluir'?`<div class="card stack"><b>Excluir ${esc(c.nome)}?</b><p class="small muted" style="margin:0">A ficha some, mas atendimentos e pacotes antigos continuam no histórico.</p><div class="row"><button class="btn bad grow" data-a="delCli">Excluir</button><button class="btn ghost" data-a="panel" data-v="">Voltar</button></div></div>`:`<button class="btn ghost" data-a="panel" data-v="excluir">Excluir cliente</button>`):''}
   </div><div class="sheet-foot"><button class="btn pri grow" data-a="salvarCli">Salvar</button></div>`;
@@ -1089,7 +1125,7 @@ function sheetServ(){
 }
 function sheetProf(){
   const p = SH.id ? prof(SH.id) : {};
-  if(!SH.init){ SH.init = true; SH.cor = p.cor || CORES[(S.profs.length*3) % CORES.length]; SH.servs = [...(p.servicos||[])]; SH.dias = [...(p.dias || C().dias)]; SH.hp = !!p.horarioProprio; }
+  if(!SH.init){ SH.init = true; SH.cor = p.cor || CORES[(S.profs.length*3) % CORES.length]; SH.servs = [...(p.servicos||[])]; SH.hs = horariosDe(p.horarioProprio ? p : C()); SH.hp = !!p.horarioProprio; }
   const c = C(); const ls = [...S.servs].sort((a,b)=>(a.nome||'').localeCompare(b.nome||''));
   return head(SH.id ? 'Editar profissional' : 'Nova profissional') + `<div class="stack">
   <div class="fld"><label for="pr-nome">Nome</label><input class="inp" id="pr-nome" value="${esc(p.nome||'')}"></div>
@@ -1097,7 +1133,7 @@ function sheetProf(){
   <div class="fld"><span class="lb">Cor</span><div class="colors">${CORES.map(x => `<button type="button" style="--c:${x}" data-a="cor" data-v="${x}" aria-pressed="${SH.cor===x}" aria-label="Cor ${x}"></button>`).join('')}</div></div>
   <div class="fld"><span class="lb">Serviços que faz (nenhum marcado = todos)</span>${ls.length?`<div class="chips wrap">${ls.map(s => `<button type="button" class="chip" data-a="prServ" data-id="${s.id}" aria-pressed="${SH.servs.includes(s.id)}"><span class="dot" style="--c:${esc(s.cor)}"></span>${esc(s.nome)}</button>`).join('')}</div>`:'<span class="small muted">Cadastre os serviços primeiro.</span>'}</div>
   <label class="switch"><span>Horário próprio, diferente do espaço</span><input type="checkbox" id="pr-hp" data-a="prHp" ${SH.hp?'checked':''}></label>
-  <div class="stack" id="pr-hpbox" ${SH.hp?'':'hidden'}><div class="fld"><span class="lb">Dias</span>${diasChips('pr-dias', SH.dias)}</div><div class="grid2"><div class="fld"><label for="pr-ini">Início</label><input class="inp" type="time" id="pr-ini" value="${p.inicio||c.inicio}"></div><div class="fld"><label for="pr-fim">Fim</label><input class="inp" type="time" id="pr-fim" value="${p.fim||c.fim}"></div></div><div class="grid2"><div class="fld"><label for="pr-ai">Almoço de</label><input class="inp" type="time" id="pr-ai" value="${p.almocoIni ?? c.almocoIni ?? ''}"></div><div class="fld"><label for="pr-af">até</label><input class="inp" type="time" id="pr-af" value="${p.almocoFim ?? c.almocoFim ?? ''}"></div></div></div>
+  <div class="stack" id="pr-hpbox" ${SH.hp?'':'hidden'}><div class="fld"><span class="lb">Horário de cada dia</span>${editorHorarios('pr', SH.hs)}</div><div class="grid2"><div class="fld"><label for="pr-ai">Almoço de</label><input class="inp" type="time" id="pr-ai" value="${p.almocoIni ?? c.almocoIni ?? ''}"></div><div class="fld"><label for="pr-af">até</label><input class="inp" type="time" id="pr-af" value="${p.almocoFim ?? c.almocoFim ?? ''}"></div></div></div>
   <label class="switch"><span>Ativa na agenda</span><input type="checkbox" id="pr-ativo" ${p.ativo!==false?'checked':''}></label>
   ${SH.id?`<div class="card small">${p.userId?(p.userId===ME.id?'Vinculada à sua conta.':'Vinculada à conta da profissional.')+' <button class="btn sm ghost" data-a="desvincular">Desvincular</button>':'Ainda sem conta vinculada. A profissional vincula ao abrir o app e escolher o nome dela.'}</div>`:''}
   </div><div class="sheet-foot"><button class="btn pri grow" data-a="salvarProf">Salvar</button></div>`;
@@ -1132,6 +1168,16 @@ function sheetDia(){
   ${d?(SH.panel==='excluir'?`<div class="row"><button class="btn bad grow" data-a="delDia">Confirmar exclusão</button><button class="btn ghost" data-a="panel" data-v="">Voltar</button></div>`:'<button class="btn ghost" data-a="panel" data-v="excluir">Excluir dia</button>'):''}
   </div><div class="sheet-foot"><button class="btn pri grow" data-a="salvarDia">Salvar</button></div>`;
 }
+function sheetEsp(){
+  if(SH.fechado === undefined) SH.fechado = false;
+  return head('Data especial') + `<div class="stack">
+  <div class="fld"><label for="es-data">Data</label><input class="inp" type="date" id="es-data" min="${today()}"></div>
+  <div class="fld"><span class="lb">Nesse dia</span><div class="chips wrap"><button type="button" class="chip" data-a="esTipo" data-v="h" aria-pressed="${!SH.fechado}">Horário diferente</button><button type="button" class="chip" data-a="esTipo" data-v="f" aria-pressed="${SH.fechado}">Fechado</button></div></div>
+  <div class="grid2" id="es-horas" ${SH.fechado?'hidden':''}><div class="fld"><label for="es-ini">Abre às</label><input class="inp" type="time" id="es-ini" value="09:00"></div><div class="fld"><label for="es-fim">Fecha às</label><input class="inp" type="time" id="es-fim" value="13:00"></div></div>
+  <div class="fld"><label for="es-mot">Motivo (opcional)</label><input class="inp" id="es-mot" placeholder="Ex.: véspera de feriado"></div>
+  <p class="small muted" style="margin:0">Vale para o espaço todo e substitui o horário normal desse dia.</p>
+  </div><div class="sheet-foot"><button class="btn pri grow" data-a="salvarEsp">Salvar</button></div>`;
+}
 function sheetBloq(){
   if(SH.dia === undefined) SH.dia = true;
   return head('Bloquear agenda') + `<div class="stack">
@@ -1147,10 +1193,14 @@ function sheetBloq(){
 document.addEventListener('click', async e => {
   const el = e.target.closest('[data-a]'); if(!el) return;
   const a = el.dataset.a, d = el.dataset;
-  if(el.tagName === 'INPUT') { if(a === 'prHp'){ SH.hp = el.checked; $('#pr-hpbox').hidden = !el.checked; } if(a === 'bqDia'){ SH.dia = el.checked; $('#bq-horas').hidden = el.checked; } return; }
+  if(el.tagName === 'INPUT') { if(a === 'hAberto'){ const px = d.px, i = d.i; $(`#${px}-i-${i}`).hidden = !el.checked; $(`#${px}-f-${i}`).hidden = !el.checked; $(`#${px}-x-${i}`).hidden = el.checked; return; } if(a === 'prHp'){ SH.hp = el.checked; $('#pr-hpbox').hidden = !el.checked; } if(a === 'bqDia'){ SH.dia = el.checked; $('#bq-horas').hidden = el.checked; } return; }
   switch(a){
     case 'tab': U.view = d.v; U.mais = null; U.laserDia = null; if(d.v !== 'clientes') U.cliId = null; SH_conf=''; render(); window.scrollTo(0,0); break;
     case 'close': closeSheet(); break;
+    case 'formEsp': openSheet({type:'esp'}); break;
+    case 'delEsp': { const l = (C().especiais||[]).filter(e => e.data !== d.v); if(await put('config', 'geral', {...clone(S.cfg||{}), especiais:l})) toast('Data especial removida.'); break; }
+    case 'salvarEsp': { const dt = $('#es-data').value; if(!dt) return toast('Escolha a data.'); const fechado = SH.fechado; const ini = $('#es-ini').value, fim = $('#es-fim').value; if(!fechado && (!ini || !fim || toMin(fim) <= toMin(ini))) return toast('Confira o horário: o fechamento precisa ser depois da abertura.'); const l = (C().especiais||[]).filter(e => e.data !== dt && e.data >= today()); l.push({data:dt, fechado, inicio:fechado?'':ini, fim:fechado?'':fim, motivo:$('#es-mot').value.trim()}); if(await put('config', 'geral', {...clone(S.cfg||{}), especiais:l})){ closeSheet(); toast('Data especial salva.'); } break; }
+    case 'esTipo': SH.fechado = d.v === 'f'; el.parentElement.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b === el))); $('#es-horas').hidden = SH.fechado; break;
     case 'sair': sair('Você saiu.'); break;
     case 'modoLogin': modoLogin = d.v; render(); break;
     case 'liberar': { const {error} = await sb.from('perfis').update({aprovado:d.v === '1'}).eq('user_id', d.id); if(error) toast('Não foi possível alterar o acesso.'); else { toast(d.v === '1' ? 'Acesso liberado.' : 'Acesso bloqueado.'); await carregarPerfil(); render(); } break; }
@@ -1256,8 +1306,8 @@ document.addEventListener('click', async e => {
     case 'editCli': openSheet({type:'cliForm', id:d.id}); break;
     case 'salvarCli': {
       const nome = $('#cf-nome').value.trim(); if(!nome) return toast('Escreva o nome.');
-      const an = $('#cf-aniv').value.trim(); let aniv = '';
-      if(an){ const m = an.match(/^(\d{1,2})\D(\d{1,2})/); if(!m || +m[1] > 31 || +m[2] > 12 || +m[1] < 1 || +m[2] < 1) return toast('Aniversário no formato dd/mm.'); aniv = `${pad(m[2])}-${pad(m[1])}`; }
+      const adia = $('#cf-adia').value, ames = $('#cf-ames').value; let aniv = '';
+      if(adia || ames){ if(!adia || !ames) return toast('Escolha o dia e o mês do aniversário.'); if(Number(adia) > new Date(2024, Number(ames), 0).getDate()) return toast('Esse mês não tem dia ' + Number(adia) + '.'); aniv = `${ames}-${adia}`; }
       const old = SH.id ? cli(SH.id) : null; const id = SH.id || novoId('clientes');
       const base = old ? clone(old) : {}; delete base.id;
       if(await put('clientes', id, {...base, nome, whatsapp:$('#cf-tel').value.trim(), aniversario:aniv, notas:$('#cf-notas').value.trim(), criadoEm:old?.criadoEm||today()})){ closeSheet(); toast('Cliente salva.'); if(!old){ U.cliId = id; render(); } }
@@ -1289,7 +1339,7 @@ document.addEventListener('click', async e => {
       const v = lerProf(); if(!v.nome) return toast('Escreva o nome.');
       const old = SH.id ? prof(SH.id) : null;
       const doc = {nome:v.nome, whatsapp:v.tel, comissao:Number(v.com)||0, cor:SH.cor, servicos:SH.servs, ativo:v.ativo, horarioProprio:SH.hp, userId:old?.userId||null, exemplo:old?.exemplo||false};
-      if(SH.hp){ if(!SH.dias.length) return toast('Marque pelo menos um dia.'); Object.assign(doc, {dias:[...SH.dias].sort(), inicio:v.ini, fim:v.fim, almocoIni:v.ai||'', almocoFim:v.af||''}); }
+      if(SH.hp){ const hr = lerHorarios('pr'); if(hr.erro) return toast(hr.erro); Object.assign(doc, {horarios:hr.horarios, almocoIni:v.ai||'', almocoFim:v.af||''}); }
       if(await put('profissionais', SH.id || novoId('profissionais'), doc)){ closeSheet(); toast('Profissional salva.'); }
       break; }
     case 'desvincular': if(await upd('profissionais', SH.id, {userId:null})) { toast('Conta desvinculada.'); renderSheet(); } break;
@@ -1303,9 +1353,9 @@ document.addEventListener('click', async e => {
       break; }
     case 'delModelo': if(await del('modelosPacote', SH.id)){ closeSheet(); toast('Modelo excluído.'); } break;
     case 'salvarCfg': {
-      const c = C(); const dias = U._cfgDias || c.dias; if(!dias.length) return toast('Marque pelo menos um dia de atendimento.');
-      const doc = {...clone(S.cfg||{}), nomeEspaco:$('#c-nome').value.trim()||DEF.nomeEspaco, endereco:$('#c-end').value.trim(), dias:[...dias].sort(), inicio:$('#c-ini').value||DEF.inicio, fim:$('#c-fim').value||DEF.fim, almocoIni:$('#c-ai').value, almocoFim:$('#c-af').value, intervalo:parseInt($('#c-int').value)||0, faltaDesconta:$('#c-falta').checked, cancelPrazoH:parseInt($('#c-prazo').value)||0};
-      if(toMin(doc.fim) <= toMin(doc.inicio)) return toast('O horário de fechar precisa ser depois do de abrir.');
+      const hr = lerHorarios('c'); if(hr.erro) return toast(hr.erro);
+      const abertos = Object.keys(hr.horarios).filter(k => hr.horarios[k].aberto).map(Number);
+      const doc = {...clone(S.cfg||{}), nomeEspaco:$('#c-nome').value.trim()||DEF.nomeEspaco, endereco:$('#c-end').value.trim(), horarios:hr.horarios, dias:abertos.sort(), inicio:hr.horarios[abertos[0]].inicio, fim:hr.horarios[abertos[0]].fim, almocoIni:$('#c-ai').value, almocoFim:$('#c-af').value, intervalo:parseInt($('#c-int').value)||0, faltaDesconta:$('#c-falta').checked, cancelPrazoH:parseInt($('#c-prazo').value)||0};
       if(await put('config', 'geral', doc)){ U._cfgDias = null; toast('Horários e regras salvos.'); }
       break; }
     case 'salvarMsgs': { const msgs = {}; Object.keys(DEF.msgs).forEach(k => msgs[k] = $('#m-'+k).value); if(await put('config', 'geral', {...clone(S.cfg||{}), msgs})) toast('Textos salvos.'); break; }
@@ -1328,7 +1378,7 @@ document.addEventListener('click', async e => {
   }
 });
 function renderSheetKeep(){ const y = $('.sheet').scrollTop; renderSheet(); $('.sheet').scrollTop = y; }
-function lerProf(){ const g = id => $('#'+id); return {nome:g('pr-nome').value.trim(), tel:g('pr-tel').value.trim(), com:g('pr-com').value, ativo:g('pr-ativo').checked, ini:g('pr-ini').value||C().inicio, fim:g('pr-fim').value||C().fim, ai:g('pr-ai').value||'', af:g('pr-af').value||''}; }
+function lerProf(){ const g = id => $('#'+id); return {nome:g('pr-nome').value.trim(), tel:g('pr-tel').value.trim(), com:g('pr-com').value, ativo:g('pr-ativo').checked, ai:g('pr-ai').value||'', af:g('pr-af').value||''}; }
 function autoPac(sid){ if(!F.clienteId) return; F.itens.forEach(i => { if(sid && i.servicoId !== sid) return; const pk = S.pacs.find(p => p.clienteId === F.clienteId && p.servicoId === i.servicoId && usadas(p) < p.sessoes); if(pk) i.pacoteId = pk.id; }); }
 
 document.addEventListener('submit', async e => {
