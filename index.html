@@ -415,8 +415,8 @@ function filaMsgs(){
     }
     if(u === p.sessoes - 1 && !S.env['ren__'+p.id]) out.ren.push({key:'ren__'+p.id, tipo:'ren', cli:cli(p.clienteId), titulo:`${p.nome} · falta 1 sessão`, txt:fill(C().msgs.renovacao, ctxPac(p))});
     if(effProf() === 'todas' || ME.admin) parcAbertas(p).forEach(x => {
-      if(x.venc > t) return; const k = `parc__${p.id}__${x.i}`; if(!reenviar(k)) return;
-      out.pend.push({key:k, tipo:'pend', cli:cli(p.clienteId), titulo:`Parcela ${x.n} de ${p.parcelas.length} · ${brl(x.valor)} · venceu ${fmtCurto(x.venc)}`, late:daysBetween(x.venc,t) > 7, txt:fill(C().msgs.pendente, ctxPac(p, {valor_pendente:brl(x.valor)}))});
+      if(!x.venc || x.venc > t) return; const k = `parc__${p.id}__${x.i}`; if(!reenviar(k)) return;
+      out.pend.push({key:k, tipo:'pend', cli:cli(p.clienteId), titulo:`${p.tipoPag==='depois'?'Pagamento do pacote':`Parcela ${x.n} de ${p.parcelas.length}`} · ${brl(x.valor)} · venceu ${fmtCurto(x.venc)}`, late:daysBetween(x.venc,t) > 7, txt:fill(C().msgs.pendente, ctxPac(p, {valor_pendente:brl(x.valor)}))});
     });
   });
   if(ME.admin || effProf() !== 'nenhuma') S.clis.forEach(c => {
@@ -747,8 +747,8 @@ function cardPacote(p){
   <div class="row small muted" style="margin:6px 0"><span class="num"><b style="color:var(--fg)">${u} de ${p.sessoes}</b> feitas · faltam ${p.sessoes-u}</span><span class="grow"></span><span>a cada ${p.intervaloDias} dias</span></div>
   <div class="bar"><i style="width:${pct}%"></i></div>
   <div class="small muted" style="margin-top:8px">${u<p.sessoes?(fut?'Próxima sessão já marcada.':`Próxima sessão ideal: <b style="color:var(--fg)">${esc(fmtDia(proximaData(p)))}</b>`):'Todas as sessões feitas.'}</div>
-  <div class="small" style="margin-top:8px">Valor ${brl(p.valor)} · ${esc(FORMAS[p.forma]||'')}${p.tipoPag==='maquininha'?` na maquininha${p.nMaquininha>1?` em ${p.nMaquininha}x`:''}`:(p.tipoPag==='direto'?` parcelado em ${p.parcelas.length}x`:' à vista')} · pago ${brl(pagoTot)}</div>
-  ${ab.length?`<div class="list" style="margin-top:10px">${ab.map(x => `<div class="li" style="cursor:default"><span class="grow small num">Parcela ${x.n} · ${brl(x.valor)} · vence ${fmtCurto(x.venc)}${x.venc<today()?' <span class="pill warn">vencida</span>':''}</span>${canWrite?`<button class="btn sm ok" data-a="pagarParc" data-id="${p.id}" data-i="${x.i}">Recebi</button>`:''}</div>`).join('')}</div>`:''}
+  <div class="small" style="margin-top:8px">Valor ${brl(p.valor)} · ${p.tipoPag==='depois'?'pagamento a combinar':esc(FORMAS[p.forma]||'')}${p.tipoPag==='depois'?'':p.tipoPag==='maquininha'?` na maquininha${p.nMaquininha>1?` em ${p.nMaquininha}x`:''}`:(p.tipoPag==='direto'?` parcelado em ${p.parcelas.length}x`:' à vista')} · pago ${brl(pagoTot)}</div>
+  ${ab.length?`<div class="list" style="margin-top:10px">${ab.map(x => `<div class="li" style="cursor:default"><span class="grow small num">${p.tipoPag==='depois'?'Pagamento':'Parcela '+x.n} · ${brl(x.valor)} · ${x.venc?'vence '+fmtCurto(x.venc):'sem data combinada'}${x.venc&&x.venc<today()?' <span class="pill warn">vencida</span>':''}</span>${canWrite?`<button class="btn sm ok" data-a="pagarParc" data-id="${p.id}" data-i="${x.i}">Recebi</button>`:''}</div>`).join('')}</div>`:''}
   ${canWrite&&ME.admin?`<div class="row" style="margin-top:10px"><button class="btn sm ghost" data-a="delPac" data-id="${p.id}">Excluir pacote</button></div>`:''}</div>`;
 }
 
@@ -776,7 +776,7 @@ function calcFin(mes){
       if((p.criadoEm||'').startsWith(mes)){ r.pacVend += Number(p.valor)||0; r.pacVendN++; }
       (p.parcelas||[]).forEach(x => {
         if(x.pago){ if((x.pagoEm||'').startsWith(mes)){ r.mes += +x.valor||0; r.porForma[x.forma||p.forma] = (r.porForma[x.forma||p.forma]||0) + (+x.valor||0); } if(x.pagoEm === t) r.hoje += +x.valor||0; }
-        else { r.receber += +x.valor||0; r.receberItens.push({cli:cli(p.clienteId), txt:`${p.nome} · parcela ${x.n} · vence ${fmtCurto(x.venc)}`, v:+x.valor||0}); }
+        else { r.receber += +x.valor||0; r.receberItens.push({cli:cli(p.clienteId), txt:`${p.nome} · ${p.tipoPag==='depois'?'pagamento':'parcela '+x.n} · ${x.venc?'vence '+fmtCurto(x.venc):'sem data combinada'}`, v:+x.valor||0}); }
       });
     });
     S.saidas.filter(s => (s.data||'').startsWith(mes)).forEach(s => { const v = +s.valor||0; r.saidas += v; r.porCat[s.categoria] = (r.porCat[s.categoria]||0) + v; r.saidasItens.push(s); });
@@ -1079,35 +1079,38 @@ function sheetPacForm(){
   <div class="fld"><label for="p-serv">Serviço das sessões</label><select class="inp" id="p-serv"><option value="">Escolha</option>${[...S.servs].sort((a,b)=>(a.nome||'').localeCompare(b.nome||'')).map(s => `<option value="${s.id}" ${P.servicoId===s.id?'selected':''}>${esc(s.nome)}</option>`).join('')}</select></div>
   <div class="grid2"><div class="fld"><label for="p-ses">Sessões</label><input class="inp" type="number" min="1" id="p-ses" value="${P.sessoes}"></div><div class="fld"><label for="p-int">Intervalo (dias)</label><input class="inp" type="number" min="1" id="p-int" value="${P.intervaloDias}"></div></div>
   <div class="fld"><label for="p-val">Valor total (R$)</label><input class="inp num" id="p-val" inputmode="decimal" value="${P.valor?String(P.valor).replace('.',','):''}"></div>
-  <div class="fld"><span class="lb">Forma de pagamento</span><div class="chips wrap">${Object.entries(FORMAS).map(([k,l]) => `<button class="chip" data-a="pForma" data-v="${k}" aria-pressed="${P.forma===k}">${l}</button>`).join('')}</div></div>`;
+  <div class="fld"><span class="lb">Pagamento</span><div class="chips wrap"><button class="chip" data-a="pQuando" data-v="agora" aria-pressed="${P.quando!=='depois'}">Registrar agora</button><button class="chip" data-a="pQuando" data-v="depois" aria-pressed="${P.quando==='depois'}">Definir depois</button></div></div>`;
+  if(P.quando === 'depois') h += `<div class="fld"><label for="p-vd">Data combinada para pagar (opcional)</label><input class="inp" type="date" id="p-vd" value="${esc(P.vencDepois||'')}"><span class="small muted">O pacote fica com o valor em aberto. Quando a cliente pagar, toque em Recebi no pacote, na ficha dela.</span></div>`;
+  else { h += `<div class="fld"><span class="lb">Forma de pagamento</span><div class="chips wrap">${Object.entries(FORMAS).map(([k,l]) => `<button class="chip" data-a="pForma" data-v="${k}" aria-pressed="${P.forma===k}">${l}</button>`).join('')}</div></div>`;
   if(P.forma === 'cartao') h += `<div class="fld"><label for="p-nmq">Parcelas na maquininha</label><select class="inp" id="p-nmq">${[1,2,3,4,5,6,7,8,9,10,11,12].map(n => `<option value="${n}" ${P.nMaquininha==n?'selected':''}>${n===1?'À vista':n+'x'}</option>`).join('')}</select><span class="small muted">No cartão, quem paga as parcelas é a operadora. O valor entra como recebido hoje.</span></div>`;
   else h += `<div class="fld"><span class="lb">Condição</span><div class="chips wrap"><button class="chip" data-a="pTipo" data-v="avista" aria-pressed="${P.tipoPag==='avista'}">À vista</button><button class="chip" data-a="pTipo" data-v="direto" aria-pressed="${P.tipoPag==='direto'}">Parcelado comigo</button></div></div>`
-    + (P.tipoPag === 'direto' ? `<div class="grid2"><div class="fld"><label for="p-np">Parcelas</label><input class="inp" type="number" min="2" max="24" id="p-np" value="${P.nParc}"></div><div class="fld"><label for="p-v1">1º vencimento</label><input class="inp" type="date" id="p-v1" value="${P.venc1}"></div></div><label class="switch"><span>A 1ª parcela foi paga hoje</span><input type="checkbox" id="p-entrada" ${P.entradaPaga?'checked':''}></label>` : '');
+    + (P.tipoPag === 'direto' ? `<div class="grid2"><div class="fld"><label for="p-np">Parcelas</label><input class="inp" type="number" min="2" max="24" id="p-np" value="${P.nParc}"></div><div class="fld"><label for="p-v1">1º vencimento</label><input class="inp" type="date" id="p-v1" value="${P.venc1}"></div></div><label class="switch"><span>A 1ª parcela foi paga hoje</span><input type="checkbox" id="p-entrada" ${P.entradaPaga?'checked':''}></label>` : ''); }
   h += `</div><div class="sheet-foot"><button class="btn pri grow" data-a="salvarPac">Salvar pacote</button></div>`;
   return h;
 }
 function lerPacForm(){ const P = SH.p; const g = id => $('#'+id);
   if(g('p-nome')) P.nome = g('p-nome').value; if(g('p-serv')) P.servicoId = g('p-serv').value; if(g('p-ses')) P.sessoes = parseInt(g('p-ses').value)||0; if(g('p-int')) P.intervaloDias = parseInt(g('p-int').value)||0;
-  if(g('p-val')) P.valor = numIn(g('p-val').value); if(g('p-nmq')) P.nMaquininha = parseInt(g('p-nmq').value)||1; if(g('p-np')) P.nParc = parseInt(g('p-np').value)||2; if(g('p-v1')) P.venc1 = g('p-v1').value; if(g('p-entrada')) P.entradaPaga = g('p-entrada').checked; }
+  if(g('p-val')) P.valor = numIn(g('p-val').value); if(g('p-nmq')) P.nMaquininha = parseInt(g('p-nmq').value)||1; if(g('p-np')) P.nParc = parseInt(g('p-np').value)||2; if(g('p-v1')) P.venc1 = g('p-v1').value; if(g('p-entrada')) P.entradaPaga = g('p-entrada').checked; if(g('p-vd')) P.vencDepois = g('p-vd').value; }
 function addMes(s, n){ const d = parseD(s); const dia = d.getDate(); d.setDate(1); d.setMonth(d.getMonth()+n); const ult = new Date(d.getFullYear(), d.getMonth()+1, 0).getDate(); d.setDate(Math.min(dia, ult)); return isoD(d); }
 async function salvarPac(){
   lerPacForm(); const P = SH.p; const t = today();
   if(!P.nome.trim()) return toast('Dê um nome ao pacote.'); if(!P.servicoId) return toast('Escolha o serviço das sessões.');
   if(P.sessoes < 1) return toast('Informe a quantidade de sessões.'); if(P.valor <= 0) return toast('Informe o valor do pacote.');
   let parcelas;
-  if(P.forma === 'cartao') parcelas = [{n:1, valor:P.valor, venc:t, pago:true, pagoEm:t, forma:'cartao'}];
+  if(P.quando === 'depois') parcelas = [{n:1, valor:P.valor, venc:P.vencDepois||'', pago:false, pagoEm:null, forma:null}];
+  else if(P.forma === 'cartao') parcelas = [{n:1, valor:P.valor, venc:t, pago:true, pagoEm:t, forma:'cartao'}];
   else if(P.tipoPag === 'avista') parcelas = [{n:1, valor:P.valor, venc:t, pago:true, pagoEm:t, forma:P.forma}];
   else {
     const n = Math.max(2, P.nParc); const cents = Math.round(P.valor*100); const base = Math.floor(cents/n);
     parcelas = Array.from({length:n}, (_,i) => { const v = (i === n-1 ? cents - base*(n-1) : base)/100; const venc = addMes(P.venc1 || t, i); const pago = i === 0 && P.entradaPaga; return {n:i+1, valor:v, venc, pago, pagoEm:pago?t:null, forma:P.forma}; });
   }
   const doc = {clienteId:P.clienteId, servicoId:P.servicoId, modeloId:P.modeloId||null, nome:P.nome.trim(), sessoes:P.sessoes, intervaloDias:P.intervaloDias||30, valor:P.valor, forma:P.forma,
-    tipoPag:P.forma==='cartao'?'maquininha':P.tipoPag, nMaquininha:P.forma==='cartao'?P.nMaquininha:null, parcelas, criadoEm:t, criadoPor:ME.id||null};
+    tipoPag:P.quando==='depois'?'depois':(P.forma==='cartao'?'maquininha':P.tipoPag), nMaquininha:P.quando!=='depois'&&P.forma==='cartao'?P.nMaquininha:null, parcelas, criadoEm:t, criadoPor:ME.id||null};
   if(await put('pacotes', novoId('pacotes'), doc)){ closeSheet(); toast('Pacote cadastrado.'); }
 }
 function sheetParc(){
   const p = pac(SH.id); const x = p?.parcelas?.[SH.i]; if(!x) return head('Parcela');
-  return head(`Receber parcela ${x.n}`, `${esc(p.nome)} · ${esc(cli(p.clienteId)?.nome||'')}`) + `<div class="stack"><div class="summary"><span>Valor</span><span class="num">${brl(x.valor)}</span></div><div class="fld"><label for="pp-f">Forma</label><select class="inp" id="pp-f">${Object.entries(FORMAS).map(([k,l]) => `<option value="${k}" ${x.forma===k?'selected':''}>${l}</option>`).join('')}</select></div></div><div class="sheet-foot"><button class="btn pri grow" data-a="confParc">Confirmar recebimento</button></div>`;
+  return head(p.tipoPag==='depois' ? 'Receber pagamento do pacote' : `Receber parcela ${x.n}`, `${esc(p.nome)} · ${esc(cli(p.clienteId)?.nome||'')}`) + `<div class="stack"><div class="summary"><span>Valor</span><span class="num">${brl(x.valor)}</span></div><div class="fld"><label for="pp-f">Forma</label><select class="inp" id="pp-f">${Object.entries(FORMAS).map(([k,l]) => `<option value="${k}" ${x.forma===k?'selected':''}>${l}</option>`).join('')}</select></div></div><div class="sheet-foot"><button class="btn pri grow" data-a="confParc">Confirmar recebimento</button></div>`;
 }
 
 /* Cadastros */
@@ -1313,9 +1316,10 @@ document.addEventListener('click', async e => {
       if(await put('clientes', id, {...base, nome, whatsapp:$('#cf-tel').value.trim(), aniversario:aniv, notas:$('#cf-notas').value.trim(), criadoEm:old?.criadoEm||today()})){ closeSheet(); toast('Cliente salva.'); if(!old){ U.cliId = id; render(); } }
       break; }
     case 'delCli': if(await del('clientes', SH.id)){ closeSheet(); U.cliId = null; render(); toast('Cliente excluída.'); } break;
-    case 'novoPac': openSheet({type:'pacForm', p:{clienteId:d.cli, modeloId:null, nome:'', servicoId:'', sessoes:10, intervaloDias:30, valor:0, forma:'pix', tipoPag:'avista', nMaquininha:1, nParc:3, venc1:today(), entradaPaga:true}}); break;
+    case 'novoPac': openSheet({type:'pacForm', p:{clienteId:d.cli, modeloId:null, nome:'', servicoId:'', sessoes:10, intervaloDias:30, valor:0, forma:'pix', tipoPag:'avista', quando:'depois', vencDepois:'', nMaquininha:1, nParc:3, venc1:today(), entradaPaga:true}}); break;
     case 'pModelo': { lerPacForm(); const m = S.modelos.find(x => x.id === d.id); const P = SH.p; P.modeloId = d.id || null; if(m){ P.nome = m.nome; P.servicoId = m.servicoId; P.sessoes = m.sessoes; P.intervaloDias = m.intervaloDias; P.valor = m.valor; } renderSheet(); break; }
     case 'pForma': lerPacForm(); SH.p.forma = d.v; renderSheet(); break;
+    case 'pQuando': lerPacForm(); SH.p.quando = d.v; renderSheet(); break;
     case 'pTipo': lerPacForm(); SH.p.tipoPag = d.v; renderSheet(); break;
     case 'salvarPac': await salvarPac(); break;
     case 'pagarParc': openSheet({type:'parc', id:d.id, i:Number(d.i)}); break;
