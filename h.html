@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#B02D58">
+<meta name="robots" content="noindex">
+<title>Seu horário</title>
+<link rel="icon" href="icone-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700&family=Figtree:wght@400;600;700&display=swap">
+<script src="config.js"></script>
+<style>
+:root{--bg:#F7F3F6;--surface:#FFFFFF;--line:#E3D9E0;--fg:#261B28;--muted:#75667A;--accent:#B02D58;--accent-fg:#FFFFFF;--accent-soft:#F6E0E8;--bad:#B13838;--bad-soft:#F8E0E0;
+  --f-display:"Bricolage Grotesque","Figtree",system-ui,sans-serif;--f-body:"Figtree",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+@media (prefers-color-scheme: dark){:root{--bg:#141016;--surface:#1E1721;--line:#3A303D;--fg:#F3ECF4;--muted:#A796AB;--accent:#EE7299;--accent-fg:#1C0E14;--accent-soft:#3C1F2B;--bad:#F27E7E;--bad-soft:#3E1D1F;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--f-body);font-size:16px;line-height:1.45;padding:calc(24px + env(safe-area-inset-top,0px)) 16px calc(24px + env(safe-area-inset-bottom,0px))}
+main{max-width:440px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
+.eyebrow{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);font-weight:700}
+h1{font-family:var(--f-display);font-size:30px;line-height:1.1;margin:4px 0 0;text-wrap:balance}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:18px}
+.quando{font-family:var(--f-display);font-size:24px;line-height:1.2}
+.quando small{display:block;font-family:var(--f-body);font-size:15px;color:var(--muted);font-weight:600;margin-top:4px}
+.linha{display:flex;gap:10px;margin-top:12px;font-size:15px}
+.linha b{min-width:92px;color:var(--muted);font-weight:600}
+.btn{display:flex;align-items:center;justify-content:center;gap:8px;min-height:54px;border-radius:14px;font-weight:700;font-size:16px;text-decoration:none;border:1px solid var(--line);background:var(--surface);color:var(--fg)}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
+.btn svg{width:22px;height:22px}
+.aviso{background:var(--bad-soft);color:var(--bad);border-radius:14px;padding:14px;font-weight:600}
+.dica{font-size:13.5px;color:var(--muted);text-align:center}
+.vazio{text-align:center;color:var(--muted);padding:40px 0}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main id="m"><div class="vazio">Carregando seu horário…</div></main>
+<script>
+(function(){
+  const $m = document.getElementById('m');
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const t = new URLSearchParams(location.search).get('t') || '';
+  const API = (window.AE_API || '').trim();
+  const DW = ['domingo','segunda-feira','terça-feira','quarta-feira','quinta-feira','sexta-feira','sábado'];
+  const MES = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
+  const pad = n => String(n).padStart(2,'0');
+  const ua = navigator.userAgent || '';
+  const iOS = /iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && 'ontouchend' in document);
+  const ICO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="16" rx="3"/><path d="M3 9.5h18M8 3v3M16 3v3M12 13v4M10 15h4"/></svg>';
+
+  function erro(msg){ $m.innerHTML = `<div class="vazio">${esc(msg)}</div>`; }
+  if(!t || !API){ erro('Link incompleto. Peça um novo link para o seu atendimento.'); return; }
+
+  fetch(API + '?acao=evento&t=' + encodeURIComponent(t)).then(r => r.json()).then(ev => {
+    if(!ev.ok){ erro('Não encontramos este horário. Pode ter sido removido. Fale com o espaço pelo WhatsApp.'); return; }
+    const [y,m,d] = ev.data.split('-').map(Number); const [hh,mi] = ev.hora.split(':').map(Number);
+    const dt = new Date(y, m-1, d);
+    const fimMin = hh*60 + mi + (ev.duracao||30);
+    const fim = `${pad(Math.floor(fimMin/60))}:${pad(fimMin%60)}`;
+    document.title = 'Seu horário · ' + ev.local;
+    const s = ev.data.replace(/-/g,'') + 'T' + ev.hora.replace(':','') + '00';
+    const e = ev.data.replace(/-/g,'') + 'T' + fim.replace(':','') + '00';
+    const g = 'https://calendar.google.com/calendar/render?' + new URLSearchParams({action:'TEMPLATE', text:`${ev.titulo} · ${ev.local}`, dates:`${s}/${e}`, ctz:'America/Sao_Paulo', details:`Atendimento${ev.profissional?' com '+ev.profissional:''}.`, location:ev.endereco||''}).toString();
+    const ics = API + '?acao=ics&t=' + encodeURIComponent(t);
+    const cancelado = ev.status === 'cancelado';
+    const btnG = `<a class="btn ${iOS?'':'pri'}" href="${esc(g)}" target="_blank" rel="noopener">${ICO}Salvar no Google Agenda</a>`;
+    const btnI = `<a class="btn ${iOS?'pri':''}" href="${esc(ics)}">${ICO}Salvar na agenda do iPhone</a>`;
+    $m.innerHTML = `
+      <div><div class="eyebrow">${esc(ev.local)}</div><h1>${cancelado?'Horário cancelado':'Seu horário'}</h1></div>
+      ${cancelado?'<div class="aviso">Este atendimento foi cancelado. Se quiser remarcar, fale com o espaço pelo WhatsApp.</div>':''}
+      <div class="card">
+        <div class="quando">${DW[dt.getDay()]}, ${d} de ${MES[m-1]}<small>das ${esc(ev.hora)} às ${fim}</small></div>
+        <div class="linha"><b>Serviço</b><span>${esc(ev.titulo)}</span></div>
+        ${ev.profissional?`<div class="linha"><b>Profissional</b><span>${esc(ev.profissional)}</span></div>`:''}
+        ${ev.endereco?`<div class="linha"><b>Endereço</b><span>${esc(ev.endereco)}</span></div>`:''}
+      </div>
+      ${cancelado?'':(iOS ? btnI + btnG : btnG + btnI)}
+      ${cancelado?'':'<p class="dica">Se o horário mudar, este mesmo link mostra o horário novo. É só salvar de novo na agenda.</p>'}`;
+  }).catch(() => erro('Não conseguimos carregar agora. Confira a internet e abra o link de novo.'));
+})();
+</script>
+</body>
+</html>
