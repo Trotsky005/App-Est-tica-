@@ -19,16 +19,16 @@ p{margin:0;color:var(--muted)}
 </head>
 <body>
 <main>
-<h1>Código do Apps Script</h1>
-<p>Toque no botão para copiar o código inteiro. Depois cole no Apps Script, no lugar do que estiver lá.</p>
+<h1>Código do banco de dados</h1>
+<p>Toque no botão para copiar o código inteiro. Depois cole no SQL Editor do Supabase e toque em Run.</p>
 <button class="btn" id="b" disabled>Carregando…</button>
-<div class="ok" id="m" hidden>Copiado! Agora volte ao Apps Script e cole.</div>
+<div class="ok" id="m" hidden>Copiado! Agora volte ao Supabase e cole no SQL Editor.</div>
 <p>Se o botão não copiar, toque dentro da caixa abaixo, segure, escolha "Selecionar tudo" e depois "Copiar".</p>
 <textarea id="t" readonly></textarea>
 </main>
 <script>
 const b = document.getElementById('b'), t = document.getElementById('t'), m = document.getElementById('m');
-fetch('apps-script/Codigo.gs').then(r => r.text()).then(c => { t.value = c; b.disabled = false; b.textContent = 'Copiar código'; })
+fetch('supabase/banco.sql').then(r => r.text()).then(c => { t.value = c; b.disabled = false; b.textContent = 'Copiar código'; })
   .catch(() => { b.textContent = 'Não carregou. Recarregue a página.'; });
 b.onclick = async () => {
   try { await navigator.clipboard.writeText(t.value); }

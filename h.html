@@ -41,7 +41,7 @@ h1{font-family:var(--f-display);font-size:30px;line-height:1.1;margin:4px 0 0;te
   const $m = document.getElementById('m');
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const t = new URLSearchParams(location.search).get('t') || '';
-  const API = (window.AE_API || '').trim();
+  const URL_SB = (window.AE_SUPABASE_URL || '').trim(), KEY = (window.AE_SUPABASE_KEY || '').trim();
   const DW = ['domingo','segunda-feira','terça-feira','quarta-feira','quinta-feira','sexta-feira','sábado'];
   const MES = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
   const pad = n => String(n).padStart(2,'0');
@@ -50,9 +50,9 @@ h1{font-family:var(--f-display);font-size:30px;line-height:1.1;margin:4px 0 0;te
   const ICO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="16" rx="3"/><path d="M3 9.5h18M8 3v3M16 3v3M12 13v4M10 15h4"/></svg>';
 
   function erro(msg){ $m.innerHTML = `<div class="vazio">${esc(msg)}</div>`; }
-  if(!t || !API){ erro('Link incompleto. Peça um novo link para o seu atendimento.'); return; }
+  if(!t || !URL_SB || !KEY){ erro('Link incompleto. Peça um novo link para o seu atendimento.'); return; }
 
-  fetch(API + '?acao=evento&t=' + encodeURIComponent(t)).then(r => r.json()).then(ev => {
+  fetch(URL_SB + '/rest/v1/rpc/evento_publico', {method:'POST', headers:{'Content-Type':'application/json', apikey:KEY, Authorization:'Bearer ' + KEY}, body:JSON.stringify({t})}).then(r => r.json()).then(ev => {
     if(!ev.ok){ erro('Não encontramos este horário. Pode ter sido removido. Fale com o espaço pelo WhatsApp.'); return; }
     const [y,m,d] = ev.data.split('-').map(Number); const [hh,mi] = ev.hora.split(':').map(Number);
     const dt = new Date(y, m-1, d);
@@ -62,10 +62,14 @@ h1{font-family:var(--f-display);font-size:30px;line-height:1.1;margin:4px 0 0;te
     const s = ev.data.replace(/-/g,'') + 'T' + ev.hora.replace(':','') + '00';
     const e = ev.data.replace(/-/g,'') + 'T' + fim.replace(':','') + '00';
     const g = 'https://calendar.google.com/calendar/render?' + new URLSearchParams({action:'TEMPLATE', text:`${ev.titulo} · ${ev.local}`, dates:`${s}/${e}`, ctz:'America/Sao_Paulo', details:`Atendimento${ev.profissional?' com '+ev.profissional:''}.`, location:ev.endereco||''}).toString();
-    const ics = API + '?acao=ics&t=' + encodeURIComponent(t);
+    const ini = new Date(Date.UTC(y, m-1, d, hh + 3, mi)), fimD = new Date(ini.getTime() + (ev.duracao||30)*60000);
+    const z = x => x.toISOString().replace(/[-:]/g,'').replace(/\.\d{3}/,'');
+    const ce = x => String(x||'').replace(/\\/g,'\\\\').replace(/;/g,'\\;').replace(/,/g,'\\,').replace(/\n/g,'\\n');
+    const icsTxt = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Agenda Estetica//PT-BR','METHOD:PUBLISH','BEGIN:VEVENT','UID:' + t + '@agenda-estetica','DTSTAMP:' + z(new Date()),'DTSTART:' + z(ini),'DTEND:' + z(fimD),'SUMMARY:' + ce(ev.titulo + ' · ' + ev.local),'DESCRIPTION:' + ce('Atendimento' + (ev.profissional ? ' com ' + ev.profissional : '') + '.'), ev.endereco ? 'LOCATION:' + ce(ev.endereco) : '','BEGIN:VALARM','TRIGGER:-PT2H','ACTION:DISPLAY','DESCRIPTION:Lembrete do seu horário','END:VALARM','END:VEVENT','END:VCALENDAR'].filter(Boolean).join('\r\n');
+    const ics = 'data:text/calendar;charset=utf-8,' + encodeURIComponent(icsTxt);
     const cancelado = ev.status === 'cancelado';
     const btnG = `<a class="btn ${iOS?'':'pri'}" href="${esc(g)}" target="_blank" rel="noopener">${ICO}Salvar no Google Agenda</a>`;
-    const btnI = `<a class="btn ${iOS?'pri':''}" href="${esc(ics)}">${ICO}Salvar na agenda do iPhone</a>`;
+    const btnI = `<a class="btn ${iOS?'pri':''}" href="${esc(ics)}" download="horario.ics">${ICO}Salvar na agenda do iPhone</a>`;
     $m.innerHTML = `
       <div><div class="eyebrow">${esc(ev.local)}</div><h1>${cancelado?'Horário cancelado':'Seu horário'}</h1></div>
       ${cancelado?'<div class="aviso">Este atendimento foi cancelado. Se quiser remarcar, fale com o espaço pelo WhatsApp.</div>':''}

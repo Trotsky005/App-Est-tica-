@@ -1,3 +1,4 @@
-// Endereço do Apps Script publicado (termina em /exec).
-// Depois de publicar o script, cole o endereço aqui entre as aspas.
-window.AE_API = '';
+// Dados do projeto no Supabase (Project Settings > API).
+// A chave "anon" / "publishable" pode ficar pública: quem protege os dados são as regras do banco.
+window.AE_SUPABASE_URL = '';
+window.AE_SUPABASE_KEY = '';

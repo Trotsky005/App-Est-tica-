@@ -10,6 +10,7 @@
 <link rel="icon" href="icone-192.png">
 <link rel="apple-touch-icon" href="icone-180.png">
 <script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <title>Agenda Unhas &amp; Estética</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -69,6 +70,7 @@ main{padding:14px 16px 110px;max-width:860px;margin:0 auto}
 .btn.ghost{background:transparent;border-color:transparent}
 .btn.sm{min-height:36px;padding:6px 11px;font-size:13.5px;border-radius:10px}
 .btn.wide{width:100%}
+.btn svg{width:18px;height:18px;flex:none}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 .iconbtn{border:1px solid var(--line);background:var(--surface);width:42px;height:42px;border-radius:12px;display:grid;place-items:center;cursor:pointer;flex:none}
 .iconbtn svg{width:20px;height:20px}
@@ -410,16 +412,16 @@ function filaMsgs(){
   return out;
 }
 
-/* ---------- banco de dados (planilha no Drive via Apps Script) ---------- */
+/* ---------- banco de dados (Supabase) ---------- */
 const COLS = {profissionais:'profs', servicos:'servs', clientes:'clis', modelosPacote:'modelos', pacotes:'pacs', bloqueios:'bloqs', atendimentos:'ats', mensagens:'envArr', saidas:'saidas', diasMaquina:'dias'};
 const lsGet = k => { try{ return localStorage.getItem('ae_'+k); }catch(_){ return null; } };
 const lsSet = (k,v) => { try{ v == null ? localStorage.removeItem('ae_'+k) : localStorage.setItem('ae_'+k, v); }catch(_){ } };
 const lsJSON = k => { try{ return JSON.parse(lsGet(k) || 'null'); }catch(_){ return null; } };
-const API = () => (window.AE_API || lsGet('api') || '').trim();
-let SERVER = {};           // última leitura confirmada da planilha
-let STORE = {};            // SERVER + alterações ainda não enviadas
-let FILA = lsJSON('fila') || [];
-let enviando = false, seqLeitura = 0, ultimaEscrita = 0, statusSync = '';
+const SB_URL = (window.AE_SUPABASE_URL || '').trim(), SB_KEY = (window.AE_SUPABASE_KEY || '').trim();
+const sb = (SB_URL && SB_KEY && window.supabase) ? window.supabase.createClient(SB_URL, SB_KEY, {auth:{persistSession:true, autoRefreshToken:true}}) : null;
+const API = () => sb ? 'supabase' : '';
+let SERVER = {}, STORE = {}, FILA = lsJSON('fila') || [], PERFIS = [];
+let enviando = false, seqLeitura = 0, ultimaEscrita = 0, statusSync = '', canal = null, sessao = null;
 function mesclar(a, b){ const o = {...a}; for(const k of Object.keys(b)){ const v = b[k]; o[k] = (v && typeof v === 'object' && !Array.isArray(v) && o[k] && typeof o[k] === 'object' && !Array.isArray(o[k])) ? mesclar(o[k], v) : v; } return o; }
 function aplicarOp(st, op){ st[op.col] = st[op.col] || {}; if(op.op === 'delete') delete st[op.col][op.id]; else if(op.op === 'update'){ if(st[op.col][op.id]) st[op.col][op.id] = mesclar(st[op.col][op.id], op.data); } else st[op.col][op.id] = op.data; }
 function recalcular(){
@@ -430,39 +432,72 @@ function recalcular(){
   S.cfg = (STORE.config || {}).geral || {};
   schedule();
 }
-async function chamar(corpo){
-  const r = await fetch(API(), {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body:JSON.stringify({...corpo, senha:lsGet('senha')})});
-  const j = await r.json();
-  if(j && j.erro === 'senha'){ sair('Sua senha mudou ou não vale mais. Entre de novo.'); throw {code:'senha'}; }
-  return j;
+function salvarCache(){ try{ localStorage.setItem('ae_cache', JSON.stringify(SERVER)); }catch(_){ } }
+async function carregarPerfil(){
+  const {data:{session}} = await sb.auth.getSession(); sessao = session;
+  if(!session){ return false; }
+  ME.id = session.user.id;
+  const {data:ps} = await sb.from('perfis').select('user_id,nome,perfil').order('nome');
+  PERFIS = ps || [];
+  const eu = PERFIS.find(p => p.user_id === ME.id);
+  ME.admin = !!eu && eu.perfil === 'admin';
+  lsSet('nome', eu?.nome || session.user.email); lsSet('perfil', eu?.perfil || 'profissional');
+  return true;
 }
 async function carregar(){
-  if(!API() || !lsGet('senha')) return;
+  if(!sb || !db) return;
   const meu = ++seqLeitura, inicio = Date.now();
   try{
-    const j = await chamar({acao:'tudo'});
-    if(!j.ok) throw j;
-    if(meu !== seqLeitura || inicio < ultimaEscrita) return; // resposta velha: ignora
-    SERVER = j.dados || {};
-    try{ localStorage.setItem('ae_cache', JSON.stringify(SERVER)); }catch(_){ }
-    ME.admin = j.perfil === 'admin'; ME.id = 'login:' + j.nome; lsSet('nome', j.nome); lsSet('perfil', j.perfil);
+    await carregarPerfil();
+    const novo = {}; let de = 0;
+    while(true){
+      const {data, error} = await sb.from('registros').select('colecao,id,dados').range(de, de + 999);
+      if(error) throw error;
+      (data || []).forEach(r => { (novo[r.colecao] = novo[r.colecao] || {})[r.id] = r.dados; });
+      if(!data || data.length < 1000) break; de += 1000;
+    }
+    if(meu !== seqLeitura || inicio < ultimaEscrita) return;
+    SERVER = novo; salvarCache();
     statusSync = 'Atualizado às ' + new Date().toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'});
     S.ready = true; recalcular();
-  }catch(e){ if(e && e.code === 'senha') return; statusSync = 'Sem conexão com a planilha. Mostrando a última cópia salva no aparelho.'; if(!S.ready && Object.keys(SERVER).length){ S.ready = true; recalcular(); } else schedule(); }
+  }catch(e){ statusSync = 'Sem conexão. Mostrando a última cópia salva no aparelho.'; if(!S.ready && Object.keys(SERVER).length){ S.ready = true; recalcular(); } else schedule(); }
+}
+function ouvirMudancas(){
+  if(canal || !sb) return;
+  canal = sb.channel('registros-ao-vivo').on('postgres_changes', {event:'*', schema:'public', table:'registros'}, p => {
+    const r = p.eventType === 'DELETE' ? p.old : p.new; if(!r || !r.colecao) return;
+    SERVER[r.colecao] = SERVER[r.colecao] || {};
+    if(p.eventType === 'DELETE') delete SERVER[r.colecao][r.id]; else SERVER[r.colecao][r.id] = r.dados;
+    salvarCache(); recalcular();
+  }).subscribe();
 }
 async function enviarFila(){
-  if(enviando || !FILA.length) return;
+  if(enviando || !FILA.length || !sb || !db) return;
   enviando = true;
-  const lote = FILA.slice(0, 100);
   try{
-    const j = await chamar({acao:'gravar', ops:lote});
-    if(j.ok){ FILA = FILA.slice(lote.length); lsSet('fila', JSON.stringify(FILA)); lote.forEach(op => aplicarOp(SERVER, op)); ultimaEscrita = Date.now(); statusSync = 'Salvo na planilha'; }
-    else { FILA = FILA.slice(lote.length); lsSet('fila', JSON.stringify(FILA)); toast(j.erro || 'A planilha recusou a alteração.'); ultimaEscrita = Date.now(); setTimeout(carregar, 300); }
-  }catch(e){ if(e && e.code === 'senha'){ enviando = false; return; } statusSync = 'Sem conexão. ' + FILA.length + ' alteração(ões) aguardando envio.'; setTimeout(enviarFila, 15000); }
+    while(FILA.length){
+      const op = FILA[0]; let error = null;
+      if(op.op === 'delete'){ ({error} = await sb.from('registros').delete().match({colecao:op.col, id:op.id})); }
+      else {
+        let dados = op.op === 'update' ? (STORE[op.col] || {})[op.id] : op.data;
+        if(op.op === 'update' && !dados) dados = mesclar((SERVER[op.col] || {})[op.id] || {}, op.data);
+        ({error} = await sb.from('registros').upsert({colecao:op.col, id:op.id, dados, token:dados?.token || null, atualizado_em:new Date().toISOString()}));
+      }
+      if(error){
+        if(!error.code || /fetch|network/i.test(error.message || '')) throw error;
+        FILA.shift(); lsSet('fila', JSON.stringify(FILA));
+        toast(error.code === '42501' ? 'Só a administração pode alterar isso.' : 'Não foi possível salvar: ' + (error.message || 'erro'));
+        setTimeout(carregar, 300); continue;
+      }
+      aplicarOp(SERVER, op.op === 'update' ? {...op, op:'set', data:(STORE[op.col] || {})[op.id] || op.data} : op);
+      FILA.shift(); lsSet('fila', JSON.stringify(FILA));
+      ultimaEscrita = Date.now(); statusSync = 'Salvo';
+    }
+    salvarCache();
+  }catch(e){ statusSync = 'Sem conexão. ' + FILA.length + ' alteração(ões) aguardando envio.'; setTimeout(enviarFila, 15000); }
   enviando = false; recalcular();
-  if(FILA.length) setTimeout(enviarFila, 200);
 }
-function okEscrita(){ if(!db){ toast('Entre com sua senha para salvar.'); return false; } if(!canWrite){ toast('Sua conta só pode ver a agenda.'); return false; } return true; }
+function okEscrita(){ if(!db){ toast('Entre com seu e-mail e senha para salvar.'); return false; } if(!canWrite){ toast('Sua conta só pode ver a agenda.'); return false; } return true; }
 function gravar(op){ if(!okEscrita()) return false; FILA.push(op); lsSet('fila', JSON.stringify(FILA)); recalcular(); enviarFila(); return true; }
 async function put(col, id, data){ return gravar({op:'set', col, id, data:JSON.parse(JSON.stringify(data))}); }
 async function upd(col, id, data){ if(!(STORE[col] || {})[id]){ toast('Esse registro não existe mais.'); return false; } return gravar({op:'update', col, id, data:JSON.parse(JSON.stringify(data))}); }
@@ -498,9 +533,9 @@ function renderHeader(){
   w.hidden = false; w.textContent = ME.admin ? 'Administração' : (prof(ME.profId)?.nome || 'Profissional');
 }
 function renderView(){
-  if(API() && !lsGet('senha')) return telaLogin();
+  if(API() && !db) return telaLogin();
   if(!API()) return telaConfig();
-  if(!S.ready) return `<div class="empty"><b>Abrindo a agenda</b>Buscando atendimentos, clientes e pacotes na planilha.</div>`;
+  if(!S.ready) return `<div class="empty"><b>Abrindo a agenda</b>Buscando atendimentos, clientes e pacotes.</div>`;
   if(!API()) return telaConfig();
   if(!db) return telaLogin();
   if(!ME.admin && !ME.profId) return viewQuemSou();
@@ -509,17 +544,15 @@ function renderView(){
 }
 
 function telaLogin(){
-  return `<form class="login" id="fLogin"><h2>Entrar</h2><p class="muted" style="margin:0">Digite a senha que a administração passou para você.</p>
+  return `<form class="login" id="fLogin"><h2>Entrar</h2><p class="muted" style="margin:0">Use o e-mail e a senha que a administração cadastrou para você.</p>
+  <div class="fld"><label for="lg-email">E-mail</label><input class="inp" id="lg-email" type="email" autocomplete="username" inputmode="email" required></div>
   <div class="fld"><label for="lg-senha">Senha</label><input class="inp" id="lg-senha" type="password" autocomplete="current-password" required></div>
   <button class="btn pri wide" type="submit" id="lg-btn">Entrar</button><div class="small muted" id="lg-msg"></div></form>`;
 }
 function telaConfig(){
-  return `<div class="login" style="max-width:560px"><h2>Ligar à planilha</h2>
-  <p class="muted" style="margin:0">Cole o endereço do Apps Script publicado (termina em <span class="code">/exec</span>).</p>
-  <div class="fld"><label for="cf-api">Endereço do Apps Script</label><input class="inp" id="cf-api" placeholder="https://script.google.com/macros/s/.../exec"></div>
-  <button class="btn pri wide" data-a="salvarApi">Salvar e continuar</button></div>`;
+  return `<div class="login" style="max-width:560px"><h2>Quase pronto</h2><p class="muted" style="margin:0">O app ainda não foi ligado ao banco de dados. Falta colocar o endereço e a chave do Supabase no arquivo config.js.</p></div>`;
 }
-function sair(msg){ lsSet('senha', null); lsSet('nome', null); lsSet('perfil', null); db = null; S.ready = false; render(); if(msg) toast(msg); }
+async function sair(msg){ try{ if(sb) await sb.auth.signOut(); }catch(_){ } try{ localStorage.removeItem('ae_cache'); }catch(_){ } lsSet('nome', null); lsSet('perfil', null); db = null; SERVER = {}; S.ready = false; if(canal){ sb.removeChannel(canal); canal = null; } render(); if(msg) toast(msg); }
 function viewQuemSou(){
   const ps = activeProfs();
   if(!ps.length) return `<div class="empty"><b>Nenhuma profissional cadastrada</b>Peça para a administração cadastrar as profissionais em Mais → Profissionais.</div>`;
@@ -745,11 +778,11 @@ function viewFin(){
 
 /* ---------- Mais ---------- */
 function viewMais(){
-  if(U.mais) return ({servicos:maisServicos, profs:maisProfs, modelos:maisModelos, config:maisConfig, msgs:maisMsgs, dados:maisDados}[U.mais] || (() => ''))();
+  if(U.mais) return ({equipe:maisEquipe, servicos:maisServicos, profs:maisProfs, modelos:maisModelos, config:maisConfig, msgs:maisMsgs, dados:maisDados}[U.mais] || (() => ''))();
   const back = '';
   if(!ME.admin) return `<div class="card"><div class="small muted">Você está usando como</div><b style="font-size:18px">${esc(prof(ME.profId)?.nome||'')}</b><div class="row" style="margin-top:10px"><button class="btn sm" data-a="trocarEu">Não sou eu</button></div></div>
     <p class="muted small" style="margin-top:12px">Serviços, profissionais, pacotes e configurações são ajustados pela administração.</p>` + rodapeConta();
-  const it = [['servicos','Serviços', `${S.servs.length} cadastrados · preço, duração, cor e mensagem`],['profs','Profissionais',`${activeProfs().length} ativas · serviços, horários e comissão`],['modelos','Pacotes',`${S.modelos.length} modelos no catálogo`],['config','Horários e regras','Dias, horário, almoço, intervalo, folgas e regras de pacote'],['msgs','Textos das mensagens','Confirmação, remarcação, renovação, pendência e aniversário'],['dados','Dados, senhas e acesso','Planilha no Drive, senhas da equipe e dados de exemplo']];
+  const it = [['servicos','Serviços', `${S.servs.length} cadastrados · preço, duração, cor e mensagem`],['profs','Profissionais',`${activeProfs().length} ativas · serviços, horários e comissão`],['modelos','Pacotes',`${S.modelos.length} modelos no catálogo`],['config','Horários e regras','Dias, horário, almoço, intervalo, folgas e regras de pacote'],['msgs','Textos das mensagens','Confirmação, remarcação, renovação, pendência e aniversário'],['equipe','Equipe e acessos','Logins, quem é administração'],['dados','Dados','Onde ficam os dados e dados de exemplo']];
   return back + `<div class="list">${it.map(([k,t,s]) => `<button class="li" data-a="mais" data-v="${k}"><span class="grow"><span class="t">${t}</span><br><span class="s">${s}</span></span><span class="chev">${ICON.chev}</span></button>`).join('')}</div>` + rodapeConta();
 }
 function rodapeConta(){ return `<div class="card" style="margin-top:14px"><div class="row"><span class="grow"><span class="small muted">Conectado como</span><br><b>${esc(lsGet('nome')||'')}</b> <span class="pill">${ME.admin?'administração':'profissional'}</span></span><button class="btn sm" data-a="sair">Sair</button></div><div class="small muted" style="margin-top:8px">${esc(statusSync)}${FILA.length?` · ${FILA.length} alteração(ões) aguardando envio`:''}</div><div class="row" style="margin-top:8px"><button class="btn sm" data-a="atualizar">Atualizar agora</button></div></div>`; }
@@ -787,16 +820,22 @@ function maisConfig(){
 }
 function maisMsgs(){
   const c = C();
-  return voltarMais('Textos das mensagens') + `<p class="muted small" style="margin:-4px 0 12px">Campos que você pode usar: ${['nome','servicos','profissional','data','hora','link','sessao_atual','sessoes_restantes','valor_pendente'].map(x => `<span class="code">{${x}}</span>`).join(' ')}. O campo <span class="code">{link}</span> abre o horário já preenchido no Google Agenda. A confirmação de cada serviço pode ter texto próprio, em Serviços.</p>
+  return voltarMais('Textos das mensagens') + `<p class="muted small" style="margin:-4px 0 12px">Campos que você pode usar: ${['nome','servicos','profissional','data','hora','link','sessao_atual','sessoes_restantes','valor_pendente'].map(x => `<span class="code">{${x}}</span>`).join(' ')}. O campo <span class="code">{link}</span> abre uma página com o horário e os botões para salvar na agenda do celular. A confirmação de cada serviço pode ter texto próprio, em Serviços.</p>
   <div class="stack">${Object.keys(DEF.msgs).map(k => `<div class="fld"><label for="m-${k}">${MSG_NOMES[k]}</label><textarea class="inp" id="m-${k}" rows="4">${esc(c.msgs[k])}</textarea></div>`).join('')}
   <div class="row"><button class="btn pri grow" data-a="salvarMsgs">Salvar textos</button><button class="btn" data-a="restaurarMsgs">Restaurar padrão</button></div></div>`;
 }
+function maisEquipe(){
+  const ps = PERFIS;
+  return voltarMais('Equipe e acessos') + `<div class="stack">
+  <div class="card small"><b>Como dar acesso a alguém</b><ol style="margin:6px 0 0;padding-left:20px;color:var(--muted)"><li>No painel do Supabase, abra <b>Authentication → Users</b></li><li>Toque em <b>Add user → Create new user</b></li><li>Coloque o e-mail e uma senha, deixe <b>Auto Confirm User</b> ligado e salve</li><li>Passe o e-mail e a senha para a pessoa. Ela aparece aqui como profissional</li></ol></div>
+  ${ps.length ? `<div class="list">${ps.map(p => `<div class="li" style="cursor:default"><span class="grow"><span class="t">${esc(p.nome)}</span>${p.user_id===ME.id?' <span class="pill">você</span>':''}<br><span class="s">${p.perfil==='admin'?'Administração':'Profissional'}</span></span>${p.user_id!==ME.id?`<button class="btn sm" data-a="mudarPerfil" data-id="${p.user_id}" data-v="${p.perfil==='admin'?'profissional':'admin'}">${p.perfil==='admin'?'Tornar profissional':'Tornar administração'}</button>`:''}</div>`).join('')}</div>` : '<div class="empty">Nenhum login ainda.</div>'}
+  </div>`;
+}
 function maisDados(){
   const nEx = ['profs','servs','clis','modelos','pacs','ats','bloqs','saidas','dias'].reduce((s,k) => s + S[k].filter(x => x.exemplo).length, 0);
-  return voltarMais('Dados e próxima etapa') + `<div class="stack">
+  return voltarMais('Dados') + `<div class="stack">
   <div class="card"><b>Dados de exemplo</b><p class="small muted" style="margin:6px 0 10px">${nEx?`Há ${nEx} registros marcados como exemplo (nomes com “exemplo”). Apague quando for começar a usar de verdade.`:'Nenhum dado de exemplo.'}</p>${nEx?(SH_conf==='ex'?`<div class="row"><button class="btn bad" data-a="apagarEx">Apagar ${nEx} registros de exemplo</button><button class="btn" data-a="confEx" data-v="">Cancelar</button></div>`:`<button class="btn" data-a="confEx" data-v="ex">Apagar dados de exemplo</button>`):''}</div>
-  <div class="card"><b>Senhas da equipe</b><p class="small muted" style="margin:6px 0 0">As senhas ficam na aba <b>Senhas</b> da planilha do Drive: uma linha por pessoa, com Nome, Senha e Perfil (<span class="code">admin</span> ou <span class="code">profissional</span>). Para dar acesso a uma profissional, crie uma linha para ela e passe a senha. Ao entrar pela primeira vez, ela escolhe o próprio nome.</p></div>
-  <div class="card"><b>Onde ficam os dados</b><p class="small muted" style="margin:6px 0 0">Na planilha <b>Agenda Estética - Banco de dados</b>, pasta App Estética do seu Drive. O app guarda uma cópia no aparelho para abrir rápido e envia as alterações em segundo plano. Uma cópia de segurança é feita todo dia na pasta Backups.</p></div></div>`;
+  <div class="card"><b>Onde ficam os dados</b><p class="small muted" style="margin:6px 0 0">No banco de dados do Supabase (projeto agenda-estetica). O app guarda uma cópia no aparelho para abrir rápido, envia as alterações em segundo plano e recebe na hora o que outras pessoas mudam.</p></div></div>`;
 }
 let SH_conf = '';
 
@@ -1097,8 +1136,8 @@ document.addEventListener('click', async e => {
     case 'tab': U.view = d.v; U.mais = null; U.laserDia = null; if(d.v !== 'clientes') U.cliId = null; SH_conf=''; render(); window.scrollTo(0,0); break;
     case 'close': closeSheet(); break;
     case 'sair': sair('Você saiu.'); break;
+    case 'mudarPerfil': { const {error} = await sb.from('perfis').update({perfil:d.v}).eq('user_id', d.id); if(error) toast('Não foi possível mudar o perfil.'); else { toast('Perfil alterado.'); await carregarPerfil(); render(); } break; }
     case 'atualizar': toast('Atualizando…'); await enviarFila(); await carregar(); toast(statusSync || 'Atualizado.'); break;
-    case 'salvarApi': { const v = ($('#cf-api').value || '').trim(); if(!/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec$/.test(v)) return toast('O endereço precisa começar com https://script.google.com/macros/s/ e terminar em /exec.'); lsSet('api', v); render(); break; }
     case 'dnav': U.date = addDays(U.date, (U.mode==='dia'?1:7) * Number(d.n)); render(); break;
     case 'dhoje': U.date = today(); render(); break;
     case 'mode': U.mode = d.v; render(); break;
@@ -1277,16 +1316,13 @@ function autoPac(sid){ if(!F.clienteId) return; F.itens.forEach(i => { if(sid &&
 document.addEventListener('submit', async e => {
   if(e.target.id !== 'fLogin') return;
   e.preventDefault();
-  const senha = $('#lg-senha').value.trim(); if(!senha) return;
+  const email = $('#lg-email').value.trim(), senha = $('#lg-senha').value;
   const b = $('#lg-btn'), m = $('#lg-msg'); b.disabled = true; m.textContent = 'Conferindo…';
   try{
-    const r = await fetch(API(), {method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body:JSON.stringify({acao:'login', senha})});
-    const j = await r.json();
-    if(!j.ok){ m.textContent = j.mensagem || j.erro || 'Senha incorreta.'; b.disabled = false; return; }
-    lsSet('senha', senha); lsSet('nome', j.nome); lsSet('perfil', j.perfil);
-    ME.admin = j.perfil === 'admin'; ME.id = 'login:' + j.nome; db = true; canWrite = true;
-    render(); carregar();
-  }catch(_){ m.textContent = 'Não consegui falar com a planilha. Confira a internet e tente de novo.'; b.disabled = false; }
+    const {error} = await sb.auth.signInWithPassword({email, password:senha});
+    if(error){ m.textContent = /invalid/i.test(error.message) ? 'E-mail ou senha incorretos.' : 'Não foi possível entrar: ' + error.message; b.disabled = false; return; }
+    db = true; canWrite = true; await carregarPerfil(); render(); ouvirMudancas(); carregar();
+  }catch(_){ m.textContent = 'Não consegui falar com o banco de dados. Confira a internet e tente de novo.'; b.disabled = false; }
 });
 document.addEventListener('input', e => {
   const id = e.target.id;
@@ -1313,15 +1349,18 @@ document.addEventListener('keydown', e => { if(e.key === 'Escape' && SH) closeSh
 setInterval(() => { if(U.view === 'agenda' || U.view === 'msgs') schedule(); }, 60000);
 
 /* ---------- início ---------- */
-function boot(){
-  const cache = lsJSON('cache');
-  if(lsGet('senha')){
-    db = true; ME.admin = lsGet('perfil') === 'admin'; ME.id = 'login:' + (lsGet('nome') || '');
-    if(cache){ SERVER = cache; S.ready = true; recalcular(); statusSync = 'Mostrando a cópia salva no aparelho. Atualizando…'; }
-  }
+async function boot(){
   render();
-  if(lsGet('senha')){ carregar(); enviarFila(); }
-  setInterval(() => { if(document.visibilityState === 'visible' && db){ enviarFila(); carregar(); } }, 30000);
+  if(!sb){ render(); return; }
+  const {data:{session}} = await sb.auth.getSession();
+  if(session){
+    db = true; ME.id = session.user.id; ME.admin = lsGet('perfil') === 'admin';
+    const cache = lsJSON('cache');
+    if(cache){ SERVER = cache; S.ready = true; recalcular(); statusSync = 'Mostrando a cópia salva no aparelho. Atualizando…'; }
+    render(); ouvirMudancas(); carregar(); enviarFila();
+  } else render();
+  sb.auth.onAuthStateChange((ev) => { if(ev === 'SIGNED_OUT' && db){ db = null; S.ready = false; render(); } });
+  setInterval(() => { if(document.visibilityState === 'visible' && db){ enviarFila(); carregar(); } }, 60000);
   document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible' && db){ enviarFila(); carregar(); } });
   window.addEventListener('online', () => { if(db){ enviarFila(); carregar(); } });
 }
