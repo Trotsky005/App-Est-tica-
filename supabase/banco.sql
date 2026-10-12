@@ -101,6 +101,10 @@ end $$;
 revoke all on function public.evento_publico(text) from public;
 grant execute on function public.evento_publico(text) to anon, authenticated;
 
+revoke all on function public.novo_usuario() from public, anon, authenticated;
+revoke all on function public.eh_admin() from public, anon;
+grant execute on function public.eh_admin() to authenticated;
+
 -- 7) Atualização ao vivo entre aparelhos
 do $$ begin
   alter publication supabase_realtime add table public.registros;
